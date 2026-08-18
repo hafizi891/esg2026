@@ -1,0 +1,23 @@
+# Secrets / local config
+.env
+facility.json
+
+# Leftover tinytuya wizard/scan output — also contains real device local_key values
+devices.json
+snapshot.json
+
+# Runtime data
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
