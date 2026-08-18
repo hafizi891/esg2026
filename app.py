@@ -32,6 +32,7 @@ import facility_store
 import analytics_store
 import automation_engine
 import mqtt_client
+import ir_codes
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -98,18 +99,25 @@ AC_CODE_MAP = {
 
 
 def send_ac_command(code, value):
-    """Send a real air-conditioner command via Tuya's dedicated IR Control Hub
-    AC endpoint. IR_BLASTER_ID doubles as the 'infrared_id' (the gateway) and
-    AC_DEVICE_ID as the 'remote_id' — confirmed to be the same value for this
-    setup by querying GET /v2.0/infrareds/{id}/remotes."""
+    """Send a real air-conditioner command — locally, for free, if this exact
+    (code, value) has been captured via capture_ir_codes.py; otherwise via
+    Tuya's dedicated IR Control Hub AC endpoint (costs a cloud API call).
+    IR_BLASTER_ID doubles as the 'infrared_id' (the gateway) and AC_DEVICE_ID
+    as the 'remote_id' — confirmed to be the same value for this setup by
+    querying GET /v2.0/infrareds/{id}/remotes."""
     real_code, mapped_value = AC_CODE_MAP.get(code, (code, None))
     real_value = mapped_value if mapped_value is not None else value
 
-    cloud = get_cloud()
-    result = cloud.cloudrequest(
-        f"/v2.0/infrareds/{IR_BLASTER_ID}/air-conditioners/{AC_DEVICE_ID}/command",
-        post={"code": real_code, "value": real_value},
-    )
+    captured = ir_codes.get_code(code, value)
+    if captured:
+        ir_codes.send_locally(captured)
+        result = {"local": True}
+    else:
+        cloud = get_cloud()
+        result = cloud.cloudrequest(
+            f"/v2.0/infrareds/{IR_BLASTER_ID}/air-conditioners/{AC_DEVICE_ID}/command",
+            post={"code": real_code, "value": real_value},
+        )
     mqtt_client.publish("commands/ac", {"code": real_code, "value": real_value})
 
     # Keep the automation engine's assumed AC state in sync regardless of who

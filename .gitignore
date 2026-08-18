@@ -6,6 +6,9 @@ facility.json
 devices.json
 snapshot.json
 
+# Captured raw IR codes — specific to your exact AC remote/model, not portable
+ir_codes.json
+
 # Runtime data
 *.db
 
