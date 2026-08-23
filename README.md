@@ -16,7 +16,7 @@ PIR sensor for low-latency motion detection.
 - **State-diff guard, not a cooldown** — actions only resend when the target state actually differs from what was last applied, so a rule can fire on every motion event without spamming the AC.
 - **Logs & analytics** — every automation firing (success or failure), plus gap/flicker analysis to help tune sensible "no motion" thresholds.
 - **Network scan & self-healing** — detects when a local device's IP has drifted (common after Wi-Fi reconnects) and offers a one-click fix; the PIR listener also recovers automatically from a wedged connection.
-- **Optional MQTT mirror** — publish every command to a broker for other systems (Home Assistant, Node-RED, etc.) to observe.
+- **Optional MQTT mirror** — publish every command and sensor/automation state change to a broker; a separate cloud-hosted dashboard (`cloud/`) subscribes to this to mirror everything and remote-control the Pi without ever touching Tuya itself.
 - **Optional local IR replay** — capture the exact AC settings you use once (`capture_ir_codes.py`) and they're sent locally afterward, with zero Tuya cloud API calls; falls back to the cloud endpoint automatically for anything not yet captured.
 
 ## Setup
@@ -76,15 +76,50 @@ yet captured still falls back to the cloud endpoint automatically, so partial
 capture never breaks anything. Re-run the script any time you add a new
 temperature/mode/fan value to an automation.
 
+### Optional: cloud dashboard (deploy `cloud/` to a VM)
+
+This app is designed to run on a Raspberry Pi (or any always-on machine on your
+home LAN) — it needs direct local network access to the PIR sensor and IR blaster,
+which a cloud server doesn't have. If you also want a dashboard reachable from
+anywhere, deploy the separate lightweight app in `cloud/` to a VM instead of trying
+to move this app itself off the LAN:
+
+```
+Pi (this app)  --publish-->  MQTT broker (on your VM)  <--subscribe--  cloud/cloud_app.py
+                                                          --publish-->  (remote commands back to the Pi)
+```
+
+The Pi does all the real Tuya/device work and publishes every sensor reading and
+automation firing to the broker; `cloud/cloud_app.py` only ever talks to that
+broker — no Tuya API calls, no LAN dependency, fully cloud-deployable. Sending a
+command from the cloud dashboard (AC power, temperature, switch) publishes to a
+topic the Pi subscribes to and executes locally, so the cloud side never touches
+Tuya directly either.
+
+**On the Pi**: enable MQTT from the Settings page (or `facility.json`'s `mqtt`
+section) with your VM's broker address and a **username/password** — the Pi's
+remote-command listener refuses to start without credentials configured, since
+those commands control real hardware.
+
+**On the VM**:
+```bash
+cd cloud
+pip install -r requirements.txt
+cp .env.example .env   # same broker host/port/username/password as the Pi's Settings
+python cloud_app.py
+```
+Then open `http://<vm-address>:5001`.
+
 ## Project layout
 
 - `app.py` — Flask routes, device polling loop, PIR listener thread, SSE stream.
 - `automation_engine.py` — rule evaluation, action dispatch, anti-spam guards.
 - `facility_store.py` — reads/writes `facility.json` (floors, rooms, sensors, automations).
 - `analytics_store.py` — SQLite-backed readings/automation-event history.
-- `mqtt_client.py` — optional MQTT mirroring of outgoing commands.
+- `mqtt_client.py` — MQTT mirroring of state/commands, and the remote-command listener the cloud app controls the Pi through.
 - `ir_codes.py` / `capture_ir_codes.py` — optional local IR capture/replay for the AC (see above).
 - `frontend/` — React dashboard (Dashboard, Automations, Logs, Analytics, Settings pages).
+- `cloud/` — separate cloud-deployable dashboard; talks only to MQTT, never to Tuya (see above).
 
 ## Notes
 

@@ -1,4 +1,5 @@
 import json
+import time
 
 import facility_store
 
@@ -44,3 +45,57 @@ def publish(topic_suffix, payload):
         client.disconnect()
     except Exception as e:
         print(f"MQTT publish error: {e}")
+
+
+def start_remote_listener(dispatch):
+    """Runs forever (call in a background thread): subscribes to this app's
+    "remote/command" topic and calls dispatch(payload) for each message
+    received. This is what lets a separate cloud-hosted dashboard — one that
+    never talks to Tuya directly, just publishes to this same broker —
+    control real devices: the Pi does the actual device I/O, the cloud side
+    only ever publishes a command.
+
+    SECURITY: dispatch() runs whatever arrives on this topic against real
+    hardware, with no authentication layer beyond the broker's own. This
+    refuses to start unless a broker username/password is configured —
+    never point this at a broker reachable from the open internet without
+    credentials on it.
+
+    Reloads config on every (re)connect attempt, same reasoning as
+    listen_pir()'s facility.json reload — so enabling/disabling MQTT or
+    changing broker details from Settings takes effect without an app
+    restart."""
+    while True:
+        config = get_config()
+        if not config["enabled"]:
+            time.sleep(10)
+            continue
+        if not config["username"]:
+            print("MQTT remote listener: refusing to start without a broker username/password configured")
+            time.sleep(30)
+            continue
+        try:
+            import paho.mqtt.client as mqtt
+
+            def on_message(client, userdata, msg):
+                try:
+                    payload = json.loads(msg.payload.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError) as e:
+                    print(f"MQTT remote listener: bad payload on {msg.topic}: {e}")
+                    return
+                try:
+                    dispatch(payload)
+                except Exception as e:
+                    print(f"MQTT remote listener: dispatch error: {e}")
+
+            client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+            client.username_pw_set(config["username"], config["password"])
+            client.on_message = on_message
+            client.connect(config["broker_host"], config["broker_port"], keepalive=30)
+            topic = f"{config['topic_prefix']}/remote/command"
+            client.subscribe(topic)
+            print(f"MQTT remote listener: subscribed to {topic}")
+            client.loop_forever()  # blocks; paho reconnects automatically on a dropped connection
+        except Exception as e:
+            print(f"MQTT remote listener error: {e} — retrying in 10s")
+            time.sleep(10)

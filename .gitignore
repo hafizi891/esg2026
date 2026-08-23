@@ -1,5 +1,6 @@
 # Secrets / local config
 .env
+cloud/.env
 facility.json
 
 # Leftover tinytuya wizard/scan output — also contains real device local_key values

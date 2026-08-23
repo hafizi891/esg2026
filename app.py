@@ -156,6 +156,23 @@ def set_switch_state(value):
     return result
 
 
+def dispatch_remote_command(payload):
+    """Executes a command received from a remote (e.g. cloud-hosted)
+    dashboard over MQTT — see mqtt_client.start_remote_listener(). The
+    remote side never talks to Tuya directly; it publishes a command here
+    and this app does the actual device I/O, exactly as if it came from this
+    app's own dashboard or an automation."""
+    cmd_type = payload.get("type")
+    if cmd_type == "ac_command":
+        send_ac_command(payload.get("code"), payload.get("value"))
+    elif cmd_type == "toggle_switch":
+        set_switch_state(bool(payload.get("value")))
+    elif cmd_type == "send_ir":
+        send_ir_command(payload.get("code"))
+    else:
+        print(f"Remote command: unknown type {cmd_type!r}")
+
+
 def get_switch_status():
     """On-demand read of the Switch Robot's real on/off state — deliberately
     NOT part of the continuous poll_devices() loop. This exact device was the
@@ -177,6 +194,14 @@ def notify_clients(event_type, data):
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     for client in sse_clients:
         client.append(msg)
+    # Mirrors real-time state to MQTT too — this is the single choke point
+    # for every sensor reading and automation firing regardless of source,
+    # which is what lets a separate cloud-hosted dashboard (subscribed to
+    # this same broker) show live state without ever calling Tuya directly.
+    # "scan_progress" is excluded — that's purely local Wi-Fi-scan UI
+    # feedback, meaningless off this network.
+    if event_type in ("sensor_update", "automation_triggered"):
+        mqtt_client.publish(f"state/{event_type}", data)
 
 
 def handle_reading(sensor, reading, automations):
@@ -726,5 +751,7 @@ if __name__ == "__main__":
 
     t = threading.Thread(target=poll_devices, daemon=True)
     t.start()
+
+    threading.Thread(target=mqtt_client.start_remote_listener, args=(dispatch_remote_command,), daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
