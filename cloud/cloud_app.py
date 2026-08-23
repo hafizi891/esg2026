@@ -1,28 +1,45 @@
 """Cloud-side companion to the Pi-hosted Smart Motion Sensor app.
 
-This app never talks to Tuya at all — no API calls, no LAN dependency, fully
-deployable to any cloud VM. It only speaks to the same MQTT broker the
-Pi-hosted app publishes to:
+Fully self-contained under cloud/ — no import of, or dependency on, anything
+in the rest of the repo. It never talks to Tuya at all — no API calls, no
+LAN dependency, deployable to any VM on its own. It only speaks to the same
+MQTT broker the Pi-hosted app (unmodified) already publishes to:
 
   - Subscribes to "{prefix}/state/#" to mirror live sensor readings and
     automation firings (published by the Pi's notify_clients()).
+  - Subscribes to "{prefix}/commands/#" to approximate current AC/switch
+    status from the commands the Pi mirrors there whenever it actually
+    sends one — the Pi has no dedicated "current AC/switch status" MQTT
+    topic, so this is a best-effort reconstruction, not a live read.
   - Publishes to "{prefix}/remote/command" to send a command; the Pi's own
     mqtt_client.start_remote_listener() picks it up and does the actual
     device I/O against Tuya.
 
-The Pi is the only thing that ever touches real hardware or Tuya's API.
-This app is a mirror + a remote control, nothing more.
+The Pi is the only thing that ever touches real hardware, Tuya, or
+facility.json. This app is a mirror + a remote control, nothing more. Since
+it has no access to facility.json, the floor/room/sensor layout it renders
+comes from facility_layout.json (see that file) — a sanitized, manually
+maintained snapshot committed alongside this file. Update it by hand
+whenever floors/rooms/sensors/automations change on the Pi.
+
+Gated by a single shared password (see /api/login) — this is the one app
+in the repo meant to be reachable from the open internet.
 """
+import hmac
 import json
 import os
+import secrets
 import threading
 import time
+from functools import wraps
+from pathlib import Path
 
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, Response
+from dotenv import load_dotenv, set_key
+from flask import Flask, jsonify, request, Response, send_from_directory, session
 from flask_cors import CORS
 
-load_dotenv()
+ENV_PATH = Path(__file__).parent / ".env"
+load_dotenv(ENV_PATH)
 
 MQTT_BROKER_HOST = os.environ["MQTT_BROKER_HOST"]
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
@@ -30,18 +47,80 @@ MQTT_USERNAME = os.environ["MQTT_USERNAME"]
 MQTT_PASSWORD = os.environ["MQTT_PASSWORD"]
 MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "smart-motion-sensor")
 
+# The one thing gating access to this dashboard — see require_auth() below.
+CLOUD_DASHBOARD_PASSWORD = os.environ["CLOUD_DASHBOARD_PASSWORD"]
+
+FACILITY_LAYOUT = json.loads((Path(__file__).parent / "facility_layout.json").read_text(encoding="utf-8"))
+
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Signs the session cookie — falls back to a per-process random key (fine
+# functionally, just means everyone's logged out on a restart) if unset.
+# Set CLOUD_SESSION_SECRET to a fixed random string to survive restarts.
+app.secret_key = os.environ.get("CLOUD_SESSION_SECRET") or secrets.token_hex(32)
 
 # In-memory only, deliberately not persisted — a restart just means a brief
-# gap until the Pi's next publish repopulates it. The Pi's own SQLite
-# (analytics_store.py) remains the durable source of history; this is a
-# live mirror, not a second database.
+# gap until the Pi's next publish/command repopulates it. The Pi's own
+# SQLite (analytics_store.py) remains the durable source of history; this
+# is a live mirror, not a second database.
 live_sensors = {}          # sensor_id -> last-known reading
-automation_log = []        # most recent automation firings, newest last
+automation_log = []        # most recent automation firings, oldest first
 MAX_LOG = 500
+ac_status_cache = {}        # built up from mirrored "commands/ac" messages
+switch_status_cache = None  # {"online": True, "value": bool} from "commands/switch"
 
 sse_clients = []
+
+# The currently-connected subscriber client, if any — kept so a config save
+# (see api_mqtt_update) can force a reconnect with the new settings without
+# waiting for the broker connection to drop on its own.
+_subscriber_client = None
+mqtt_status = {"connected": False, "last_error": None, "connected_at": None, "last_message_at": None}
+
+
+# ==========================================
+# AUTH — a single shared password, session-cookie gated. Not a user system;
+# there's no concept of individual accounts anywhere in this project.
+# ==========================================
+
+
+@app.route("/api/session")
+def api_session():
+    return jsonify({"authenticated": bool(session.get("authenticated"))})
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    password = (request.json or {}).get("password", "")
+    # constant-time comparison — this endpoint is reachable from the open
+    # internet, so a naive == would leak timing information about the
+    # correct password one character at a time.
+    if not hmac.compare_digest(password, CLOUD_DASHBOARD_PASSWORD):
+        return jsonify({"error": "Incorrect password"}), 401
+    session["authenticated"] = True
+    session.permanent = True
+    return jsonify({"success": True})
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
+def require_auth(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthorized"}), 401
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+# ==========================================
+# MQTT MIRROR
+# ==========================================
 
 
 def notify_clients(event_type, data):
@@ -57,48 +136,90 @@ def _handle_state_message(event_type, payload):
         live_sensors[payload.get("id")] = payload
         notify_clients("sensor_update", payload)
     elif event_type == "automation_triggered":
-        automation_log.append({**payload, "received_at": time.time()})
+        automation_log.append(
+            {
+                "automation_id": payload.get("id"),
+                # The unmodified Pi doesn't publish event_type/timestamp on this
+                # topic (only id/success/error) — these defaults keep the Logs
+                # page from choking on missing fields; they upgrade for free if
+                # the Pi's automation_engine.py is ever extended to include them.
+                "event_type": payload.get("event_type", "action"),
+                "success": payload.get("success"),
+                "error": payload.get("error"),
+                "timestamp": payload.get("timestamp", time.time()),
+            }
+        )
         del automation_log[:-MAX_LOG]  # keep only the most recent MAX_LOG entries
         notify_clients("automation_triggered", payload)
 
 
+# Mirrors app.py's AC_CODE_MAP — commands/ac is published there with the
+# ALREADY-mapped code ("power"/"temp"/"mode"/"wind"), so this just needs to
+# normalize "power" to the "1"/"0" strings the real Tuya status endpoint
+# uses (everything else the frontend reads via Number(), so int is fine).
+def _handle_command_message(device, payload):
+    global switch_status_cache
+    if device == "ac":
+        code, value = payload.get("code"), payload.get("value")
+        if code == "power":
+            ac_status_cache["power"] = "1" if value else "0"
+        elif code in ("temp", "mode", "wind"):
+            ac_status_cache[code] = value
+    elif device == "switch":
+        switch_status_cache = {"online": True, "value": bool(payload.get("value"))}
+
+
 def start_mqtt_subscriber():
     """Runs forever (call in a background thread): subscribes to the Pi's
-    published state topics and updates the in-memory mirror above."""
+    published state/command topics and updates the in-memory mirrors above.
+    Reads MQTT_BROKER_HOST etc. fresh on every (re)connect attempt — not just
+    once — so a settings save (api_mqtt_update) takes effect on the very
+    next iteration of this loop, without a process restart."""
+    global _subscriber_client
     while True:
         try:
             import paho.mqtt.client as mqtt
 
             def on_message(client, userdata, msg):
-                # topic shape published by the Pi: "{prefix}/state/{event_type}"
+                mqtt_status["last_message_at"] = time.time()
                 parts = msg.topic.split("/")
-                if len(parts) < 2 or parts[-2] != "state":
+                if len(parts) < 2:
                     return
-                event_type = parts[-1]
                 try:
                     payload = json.loads(msg.payload.decode("utf-8"))
                 except (ValueError, UnicodeDecodeError):
                     return
-                _handle_state_message(event_type, payload)
+                if parts[-2] == "state":
+                    _handle_state_message(parts[-1], payload)
+                elif parts[-2] == "commands":
+                    _handle_command_message(parts[-1], payload)
+
+            def on_disconnect(client, userdata, *args):
+                mqtt_status["connected"] = False
 
             client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
             client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
             client.on_message = on_message
+            client.on_disconnect = on_disconnect
             client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=30)
-            topic = f"{MQTT_TOPIC_PREFIX}/state/#"
-            client.subscribe(topic)
-            print(f"Cloud app: subscribed to {topic}")
-            client.loop_forever()  # blocks; paho reconnects automatically on a dropped connection
+            _subscriber_client = client
+            mqtt_status.update({"connected": True, "last_error": None, "connected_at": time.time()})
+            client.subscribe([(f"{MQTT_TOPIC_PREFIX}/state/#", 0), (f"{MQTT_TOPIC_PREFIX}/commands/#", 0)])
+            print(f"Cloud app: subscribed to {MQTT_TOPIC_PREFIX}/state/# and /commands/#")
+            client.loop_forever()  # blocks; returns on a clean disconnect() or unrecoverable error
         except Exception as e:
+            mqtt_status.update({"connected": False, "last_error": str(e)})
             print(f"Cloud app MQTT subscriber error: {e} — retrying in 10s")
             time.sleep(10)
+        finally:
+            _subscriber_client = None
+            mqtt_status["connected"] = False
 
 
 def publish_command(payload):
     """Publishes a command for the Pi's remote listener to execute against
     real hardware. Short-lived connection — commands are infrequent
-    (user-triggered from this dashboard), same reasoning as the Pi's own
-    mqtt_client.publish()."""
+    (user-triggered from this dashboard)."""
     import paho.mqtt.client as mqtt
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -110,30 +231,211 @@ def publish_command(payload):
     client.disconnect()
 
 
-@app.route("/api/live_state")
-def api_live_state():
-    return jsonify(list(live_sensors.values()))
+# ==========================================
+# API ROUTES — shaped to match what cloud/frontend's copy of the dashboard
+# actually calls (see frontend/src/api/client.js there).
+# ==========================================
+
+
+def _is_sensor_alert(sensor, value, online):
+    """Mirrors facility_store._is_sensor_alert on the Pi — duplicated by
+    hand since this app has no import path to it (deliberately; it never
+    touches facility.json)."""
+    if sensor["type"] == "temperature" and sensor.get("thresholds") and value is not None:
+        return value < sensor["thresholds"]["min"] or value > sensor["thresholds"]["max"]
+    if sensor["type"] == "pir" and not online:
+        return True
+    return False
+
+
+@app.route("/api/floors")
+@require_auth
+def api_floors():
+    return jsonify(sorted(FACILITY_LAYOUT["floors"], key=lambda f: f["order"]))
+
+
+@app.route("/api/dashboard")
+@require_auth
+def api_dashboard():
+    floor_id = request.args.get("floor_id")
+    if not floor_id:
+        return jsonify({"error": "floor_id is required"}), 400
+    floor = next((f for f in FACILITY_LAYOUT["floors"] if f["id"] == floor_id), None)
+    rooms_out = []
+    for room in FACILITY_LAYOUT["rooms"]:
+        if room["floor_id"] != floor_id:
+            continue
+        residents = [r for r in FACILITY_LAYOUT["residents"] if r["room_id"] == room["id"]]
+        sensors_out = []
+        for sensor in FACILITY_LAYOUT["sensors"]:
+            if sensor["room_id"] != room["id"]:
+                continue
+            reading = live_sensors.get(sensor["id"], {"online": False, "value": None})
+            value, online = reading.get("value"), reading.get("online", False)
+            alert = _is_sensor_alert(sensor, value, online)
+            sensors_out.append({**sensor, "value": value, "online": online, "alert": alert})
+        room_has_alert = any(s["alert"] for s in sensors_out)
+        residents_out = [{**r, "alert": room_has_alert} for r in residents]
+        rooms_out.append({**room, "residents": residents_out, "sensors": sensors_out})
+    return jsonify({"floor": floor, "rooms": rooms_out})
+
+
+@app.route("/api/rooms")
+@require_auth
+def api_rooms():
+    return jsonify(FACILITY_LAYOUT["rooms"])
+
+
+@app.route("/api/sensors")
+@require_auth
+def api_sensors():
+    return jsonify(FACILITY_LAYOUT["sensors"])
+
+
+@app.route("/api/residents")
+@require_auth
+def api_residents():
+    return jsonify(FACILITY_LAYOUT["residents"])
+
+
+@app.route("/api/automations")
+@require_auth
+def api_automations():
+    return jsonify(FACILITY_LAYOUT["automations"])
 
 
 @app.route("/api/automation_events")
+@require_auth
 def api_automation_events():
     limit = request.args.get("limit", 200, type=int)
-    return jsonify(automation_log[-limit:])
+    since = request.args.get("since", type=float)
+    rows = automation_log
+    if since is not None:
+        rows = [r for r in rows if r.get("timestamp", 0) >= since]
+    return jsonify(list(reversed(rows[-limit:])))  # most recent first
 
 
-@app.route("/api/command", methods=["POST"])
-def api_command():
-    payload = request.json or {}
-    if "type" not in payload:
-        return jsonify({"error": "'type' is required (ac_command / toggle_switch / send_ir)"}), 400
+@app.route("/api/send_ir", methods=["POST"])
+@require_auth
+def api_send_ir():
+    code = (request.json or {}).get("code")
+    if not code:
+        return jsonify({"error": "No IR code provided"}), 400
     try:
-        publish_command(payload)
+        publish_command({"type": "send_ir", "code": code})
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/send_ac_command", methods=["POST"])
+@require_auth
+def api_send_ac_command():
+    data = request.json or {}
+    code, value = data.get("code"), data.get("value")
+    if not code or value is None:
+        return jsonify({"error": "code and value are required"}), 400
+    try:
+        publish_command({"type": "ac_command", "code": code, "value": value})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/toggle_switch", methods=["POST"])
+@require_auth
+def api_toggle_switch():
+    value = (request.json or {}).get("value")
+    if value is None:
+        return jsonify({"error": "value is required"}), 400
+    try:
+        publish_command({"type": "toggle_switch", "value": bool(value)})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resync_ac_state", methods=["POST"])
+@require_auth
+def api_resync_ac_state():
+    # NOTE: the unmodified Pi's dispatch_remote_command() has no handler for
+    # this command type yet — it'll log "unknown type" and no-op. Kept here
+    # so the button doesn't error; wire it up on the Pi side to make it real.
+    try:
+        publish_command({"type": "resync_ac_state", "data": request.json or {}})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ac_status")
+@require_auth
+def api_ac_status():
+    return jsonify(ac_status_cache or {"power": "0"})
+
+
+@app.route("/api/switch_status")
+@require_auth
+def api_switch_status():
+    return jsonify(switch_status_cache or {"online": False, "value": None})
+
+
+@app.route("/api/mqtt")
+@require_auth
+def api_mqtt():
+    return jsonify(
+        {
+            "broker_host": MQTT_BROKER_HOST,
+            "broker_port": MQTT_BROKER_PORT,
+            "username": MQTT_USERNAME,
+            "topic_prefix": MQTT_TOPIC_PREFIX,
+            "password_set": bool(MQTT_PASSWORD),  # never echo the actual password back
+            "status": mqtt_status,
+        }
+    )
+
+
+@app.route("/api/mqtt", methods=["PUT"])
+@require_auth
+def api_mqtt_update():
+    """Persists new broker settings to .env (preserving every other line in
+    it via dotenv's set_key) and forces the live subscriber to reconnect
+    with them immediately — no process restart needed. An omitted/blank
+    password leaves the stored one unchanged, since GET never returns it
+    for the form to round-trip."""
+    global MQTT_BROKER_HOST, MQTT_BROKER_PORT, MQTT_USERNAME, MQTT_PASSWORD, MQTT_TOPIC_PREFIX
+    data = request.json or {}
+
+    if data.get("broker_host"):
+        MQTT_BROKER_HOST = data["broker_host"]
+        set_key(ENV_PATH, "MQTT_BROKER_HOST", MQTT_BROKER_HOST)
+    if data.get("broker_port"):
+        try:
+            MQTT_BROKER_PORT = int(data["broker_port"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "broker_port must be a number"}), 400
+        set_key(ENV_PATH, "MQTT_BROKER_PORT", str(MQTT_BROKER_PORT))
+    if data.get("username"):
+        MQTT_USERNAME = data["username"]
+        set_key(ENV_PATH, "MQTT_USERNAME", MQTT_USERNAME)
+    if data.get("password"):
+        MQTT_PASSWORD = data["password"]
+        set_key(ENV_PATH, "MQTT_PASSWORD", MQTT_PASSWORD)
+    if data.get("topic_prefix"):
+        MQTT_TOPIC_PREFIX = data["topic_prefix"]
+        set_key(ENV_PATH, "MQTT_TOPIC_PREFIX", MQTT_TOPIC_PREFIX)
+
+    if _subscriber_client is not None:
+        try:
+            _subscriber_client.disconnect()  # safe to call from another thread; forces a clean reconnect
+        except Exception:
+            pass
+
+    return jsonify({"success": True})
+
+
 @app.route("/api/stream")
+@require_auth
 def stream():
     """Server-Sent Events endpoint — identical pattern to the Pi app's."""
     def event_stream():
@@ -150,98 +452,30 @@ def stream():
     return Response(event_stream(), mimetype="text/event-stream")
 
 
-DASHBOARD_HTML = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Smart Motion Sensor — Cloud</title>
-<style>
-  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1b1f27; }
-  h1 { font-size: 22px; }
-  h2 { font-size: 15px; color: #5b5648; margin-top: 32px; }
-  .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-  .muted { color: #888; font-size: 13px; }
-  button { padding: 8px 14px; border-radius: 6px; border: 1px solid #ccc; background: #f4f4f4; cursor: pointer; margin-right: 8px; }
-  button:hover { background: #e8e8e8; }
-  input[type=number] { width: 70px; padding: 6px; border-radius: 6px; border: 1px solid #ccc; }
-  #log { max-height: 240px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 8px 12px; font-family: monospace; font-size: 12px; }
-  #log div { padding: 3px 0; border-bottom: 1px solid #eee; }
-</style>
-</head>
-<body>
-<h1>Smart Motion Sensor — Cloud</h1>
-<p class="muted">Mirrors the Pi over MQTT. This page never talks to Tuya directly.</p>
+# ==========================================
+# FRONTEND — its own copy of the React app under cloud/frontend/. Run
+# `npm install && npm run build` there first; for development, run
+# `npm run dev` there instead with VITE_API_PROXY_TARGET pointed at this
+# process's port (5001). Never gated by require_auth — it's a static shell
+# that itself calls /api/session on load and shows a login screen until
+# authenticated, same as any SPA with a login page.
+# ==========================================
 
-<h2>Live sensors</h2>
-<div id="sensors"></div>
-
-<h2>Controls</h2>
-<div class="card">
-  <span>AC Power</span>
-  <span><button onclick="sendCommand({type:'ac_command', code:'PowerOn', value:'PowerOn'})">On</button>
-  <button onclick="sendCommand({type:'ac_command', code:'PowerOff', value:'PowerOff'})">Off</button></span>
-</div>
-<div class="card">
-  <span>AC Temperature</span>
-  <span><input type="number" id="temp" value="24"> <button onclick="sendCommand({type:'ac_command', code:'T', value: Number(document.getElementById('temp').value)})">Set</button></span>
-</div>
-<div class="card">
-  <span>Switch Robot</span>
-  <span><button onclick="sendCommand({type:'toggle_switch', value: true})">On</button>
-  <button onclick="sendCommand({type:'toggle_switch', value: false})">Off</button></span>
-</div>
-
-<h2>Recent automation activity</h2>
-<div id="log"></div>
-
-<script>
-function sendCommand(payload) {
-  fetch('/api/command', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
-    .then(r => r.json()).then(r => { if (r.error) alert(r.error); });
-}
-
-const sensors = {};
-function renderSensors() {
-  const el = document.getElementById('sensors');
-  el.innerHTML = Object.values(sensors).map(s =>
-    `<div class="card"><span>${s.id}</span><span>${s.value ?? '—'} ${s.online === false ? '(offline)' : ''}</span></div>`
-  ).join('') || '<p class="muted">No sensor data received yet.</p>';
-}
-
-function prependLog(text) {
-  const el = document.getElementById('log');
-  const row = document.createElement('div');
-  row.textContent = text;
-  el.prepend(row);
-}
-
-fetch('/api/live_state').then(r => r.json()).then(rows => {
-  rows.forEach(s => sensors[s.id] = s);
-  renderSensors();
-});
-fetch('/api/automation_events').then(r => r.json()).then(rows => {
-  rows.slice().reverse().forEach(e => prependLog(`${e.id} — ${e.success ? 'success' : 'FAILED'}`));
-});
-
-const source = new EventSource('/api/stream');
-source.addEventListener('sensor_update', (e) => {
-  const data = JSON.parse(e.data);
-  sensors[data.id] = data;
-  renderSensors();
-});
-source.addEventListener('automation_triggered', (e) => {
-  const data = JSON.parse(e.data);
-  prependLog(`${data.id} — ${data.success ? 'success' : 'FAILED'}`);
-});
-</script>
-</body>
-</html>
-"""
+FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 
-@app.route("/")
-def index():
-    return Response(DASHBOARD_HTML, mimetype="text/html")
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    if path and (FRONTEND_DIST / path).is_file():
+        return send_from_directory(FRONTEND_DIST, path)
+    if (FRONTEND_DIST / "index.html").exists():
+        return send_from_directory(FRONTEND_DIST, "index.html")
+    return (
+        "Frontend build not found — run `npm install && npm run build` in "
+        "cloud/frontend/, or use `npm run dev` there for development.",
+        404,
+    )
 
 
 if __name__ == "__main__":

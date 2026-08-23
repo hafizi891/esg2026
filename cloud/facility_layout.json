@@ -1,0 +1,98 @@
+{
+  "floors": [
+    {
+      "id": "floor-1",
+      "name": "Level 1",
+      "order": 1
+    }
+  ],
+  "rooms": [
+    {
+      "id": "room-l-kl",
+      "floor_id": "floor-1",
+      "name": "Kuala Lumpur",
+      "type": "resident",
+      "x": 3,
+      "y": 6,
+      "width": 54,
+      "height": 20
+    }
+  ],
+  "sensors": [
+    {
+      "id": "sensor-pir",
+      "room_id": "room-l-kl",
+      "type": "pir",
+      "name": "Motion Sensor",
+      "position": "entrance",
+      "thresholds": null,
+      "unit": null
+    },
+    {
+      "id": "sensor-ir",
+      "room_id": "room-l-kl",
+      "type": "ir",
+      "name": "Smart IR Blaster",
+      "position": "inside",
+      "thresholds": null,
+      "unit": null
+    },
+    {
+      "id": "sensor-ac",
+      "room_id": "room-l-kl",
+      "type": "aircon",
+      "name": "Air Conditioner",
+      "position": "inside",
+      "thresholds": null,
+      "unit": null
+    },
+    {
+      "id": "sensor-2781c897",
+      "room_id": "room-l-kl",
+      "type": "other",
+      "name": "Device Hub",
+      "position": "inside",
+      "thresholds": {
+        "min": 18,
+        "max": 30
+      },
+      "unit": "\u00b0C"
+    },
+    {
+      "id": "sensor-a787681d",
+      "room_id": "room-l-kl",
+      "type": "switch",
+      "name": "Switch Robot",
+      "position": "inside",
+      "thresholds": null,
+      "unit": null
+    }
+  ],
+  "residents": [],
+  "automations": [
+    {
+      "id": "auto-bfe9763e",
+      "name": "Motion turns on AC",
+      "action_type": "ac_command",
+      "trigger_sensor_id": "sensor-pir"
+    },
+    {
+      "id": "auto-6f23fba9",
+      "name": "No motion 1min turns off AC",
+      "action_type": "ac_command",
+      "trigger_sensor_id": "sensor-pir"
+    },
+    {
+      "id": "auto-0c6335fc",
+      "name": "Switch Robot Test",
+      "action_type": "toggle_switch",
+      "trigger_sensor_id": "sensor-pir"
+    },
+    {
+      "id": "auto-812e0957",
+      "name": "robot on ",
+      "action_type": "toggle_switch",
+      "trigger_sensor_id": "sensor-pir"
+    }
+  ]
+}
