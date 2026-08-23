@@ -204,6 +204,20 @@ def notify_clients(event_type, data):
         mqtt_client.publish(f"state/{event_type}", data)
 
 
+HEARTBEAT_INTERVAL_SECONDS = 20
+
+
+def send_heartbeat():
+    """Background thread: publishes a periodic "I'm alive" signal, retained
+    so a cloud companion that (re)connects sees it immediately. Sensor
+    readings only publish on change, so this is the only way to tell "the
+    Pi is running but nothing happened" apart from "the Pi is offline" —
+    the cloud side just checks how long ago the last one arrived."""
+    while True:
+        mqtt_client.publish("state/heartbeat", {"timestamp": time.time()}, retain=True)
+        time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
 def handle_reading(sensor, reading, automations):
     """Common bookkeeping whenever a fresh reading arrives for a sensor —
     used by both the interval-poll loop (cloud/local status queries) and the
@@ -753,5 +767,6 @@ if __name__ == "__main__":
     t.start()
 
     threading.Thread(target=mqtt_client.start_remote_listener, args=(dispatch_remote_command,), daemon=True).start()
+    threading.Thread(target=send_heartbeat, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

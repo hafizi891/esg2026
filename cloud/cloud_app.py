@@ -71,6 +71,13 @@ switch_status_cache = None  # {"online": True, "value": bool} from "commands/swi
 
 sse_clients = []
 
+# The Pi is the only thing that ever publishes on state/# or commands/#, so
+# mqtt_status["last_message_at"] doubles as "last time we heard from the
+# Pi" — reliably, now that app.py's send_heartbeat() publishes something
+# every 20s even when nothing else changed. Comfortably above that interval
+# to tolerate a missed beat or two plus network jitter.
+PI_OFFLINE_TIMEOUT_SECONDS = 90
+
 # The currently-connected subscriber client, if any — kept so a config save
 # (see api_mqtt_update) can force a reconnect with the new settings without
 # waiting for the broker connection to drop on its own.
@@ -132,7 +139,9 @@ def notify_clients(event_type, data):
 
 
 def _handle_state_message(event_type, payload):
-    if event_type == "sensor_update":
+    if event_type == "heartbeat":
+        pass  # nothing to do — just arriving at all is what keeps mqtt_status["last_message_at"] fresh
+    elif event_type == "sensor_update":
         live_sensors[payload.get("id")] = payload
         notify_clients("sensor_update", payload)
     elif event_type == "automation_triggered":
@@ -432,6 +441,14 @@ def api_mqtt_update():
             pass
 
     return jsonify({"success": True})
+
+
+@app.route("/api/pi_status")
+@require_auth
+def api_pi_status():
+    last_seen_at = mqtt_status["last_message_at"]
+    online = last_seen_at is not None and (time.time() - last_seen_at) < PI_OFFLINE_TIMEOUT_SECONDS
+    return jsonify({"online": online, "last_seen_at": last_seen_at})
 
 
 @app.route("/api/stream")

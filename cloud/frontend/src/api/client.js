@@ -43,3 +43,5 @@ export const getAutomationEvents = (since, limit) => {
 
 export const getMqttConfig = () => request('/mqtt')
 export const updateMqttConfig = (config) => request('/mqtt', { method: 'PUT', body: JSON.stringify(config) })
+
+export const getPiStatus = () => request('/pi_status')

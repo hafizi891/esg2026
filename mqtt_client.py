@@ -22,12 +22,18 @@ def get_config():
     return {**DEFAULT_CONFIG, **facility_store.get_mqtt_config()}
 
 
-def publish(topic_suffix, payload):
+def publish(topic_suffix, payload, retain=False):
     """Publish a JSON payload to the MQTT broker. No-op when disabled, so
     this is safe to call unconditionally from any call site. Connects fresh
     per call — commands are infrequent (user/automation triggered, not a
     polling loop), so a short-lived connection is simpler than managing a
-    persistent client's reconnect-on-config-change lifecycle."""
+    persistent client's reconnect-on-config-change lifecycle.
+
+    retain=True asks the broker to hold onto the last message on this topic
+    and hand it to any client that subscribes later — used for "current
+    state" snapshots (e.g. the heartbeat) so a cloud companion that
+    (re)connects still sees the latest one immediately, instead of waiting
+    up to a full heartbeat interval for the next."""
     config = get_config()
     if not config["enabled"]:
         return
@@ -40,7 +46,7 @@ def publish(topic_suffix, payload):
         client.connect(config["broker_host"], config["broker_port"], keepalive=10)
         client.loop_start()
         topic = f"{config['topic_prefix']}/{topic_suffix}"
-        client.publish(topic, json.dumps(payload)).wait_for_publish(timeout=5)
+        client.publish(topic, json.dumps(payload), retain=retain).wait_for_publish(timeout=5)
         client.loop_stop()
         client.disconnect()
     except Exception as e:

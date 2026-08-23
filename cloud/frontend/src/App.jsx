@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText, LogOut, Wifi } from 'lucide-react'
+import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText, LogOut, Wifi, Cpu } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Logs from './pages/Logs'
 import Mqtt from './pages/Mqtt'
+import Pi from './pages/Pi'
 import LoginScreen from './components/LoginScreen'
 import CloudUnavailableNotice from './components/CloudUnavailableNotice'
 import { useToast } from './context/ToastContext.jsx'
@@ -45,6 +46,9 @@ function Sidebar({ onLogout }) {
         </NavLink>
         <NavLink to="/mqtt" className={linkClass}>
           <Wifi size={18} /> MQTT
+        </NavLink>
+        <NavLink to="/pi" className={linkClass}>
+          <Cpu size={18} /> Pi
         </NavLink>
         <NavLink to="/settings" className={linkClass}>
           <SettingsIcon size={18} /> Settings
@@ -138,6 +142,7 @@ function AuthenticatedApp({ onLogout }) {
           <Route path="/automations" element={<CloudUnavailableNotice page="Automations" />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/mqtt" element={<Mqtt />} />
+          <Route path="/pi" element={<Pi />} />
           <Route path="/settings" element={<CloudUnavailableNotice page="Settings" />} />
         </Routes>
       </main>
