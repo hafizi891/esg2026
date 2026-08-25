@@ -400,6 +400,14 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
                 # leaving it False means this same check re-runs next poll
                 # cycle (3s), so the rule fires the moment the guard clears
                 # instead of being stuck until the next fresh motion pulse.
+                # Printed so a blocked fire is directly visible in the
+                # console at the moment it's blocked, not just inferred.
+                print(
+                    f"Automation '{automation.get('name', automation['id'])}': no-motion timeout reached but guard "
+                    f"sensor {automation['guard_sensor_id']!r} is currently "
+                    f"{'active' if current_active_state.get(automation['guard_sensor_id']) else 'inactive'} "
+                    f"(needs {automation.get('guard_state', 'inactive')}) — holding off"
+                )
                 continue
             # Set BEFORE firing, not after: _fire() may block for a while on a
             # delayed command, and _trigger_still_valid() reads this same flag

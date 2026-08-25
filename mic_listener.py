@@ -218,8 +218,15 @@ def listen_mic(sensor_id, on_state_change):
 
                 while True:
                     raw = audio_queue.get(timeout=5)
-                    talking, transitioned, _ = detector.process_frame(raw)
+                    talking, transitioned, dbfs = detector.process_frame(raw)
                     if transitioned:
+                        # Printed directly to the console so a transition can
+                        # be confirmed at the source — independent of the
+                        # dashboard UI, which adds its own network/render lag
+                        # and is easy to just not be watching at the right
+                        # moment.
+                        state = "STARTED talking" if talking else "STOPPED talking"
+                        print(f"Mic listener: {state} (dbfs={dbfs:.1f}, threshold={detector.min_dbfs:.1f})")
                         on_state_change(talking)
         except Exception as e:
             print(f"Mic listener error: {e} — retrying in 5s")
