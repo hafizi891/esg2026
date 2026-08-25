@@ -66,6 +66,15 @@
       "position": "inside",
       "thresholds": null,
       "unit": null
+    },
+    {
+      "id": "sensor-mic",
+      "room_id": "room-l-kl",
+      "type": "mic",
+      "name": "Mic Sensor",
+      "position": "inside",
+      "thresholds": null,
+      "unit": null
     }
   ],
   "residents": [],
