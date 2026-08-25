@@ -840,19 +840,43 @@ def api_switch_status():
 
 @app.route("/api/stream")
 def stream():
-    """Server-Sent Events endpoint for real-time updates."""
+    """Server-Sent Events endpoint for real-time updates.
+
+    Sends a periodic ": heartbeat" comment line (a leading ":" makes it a
+    comment per the SSE spec — EventSource never surfaces it as an event)
+    whenever nothing else is pending. Without this, a connection that sits
+    idle for a while — no motion, no automations firing — can be silently
+    dropped by an intermediary (a reverse proxy, a router/NAT idle timeout)
+    with neither side finding out: nothing was ever written to trigger a
+    write error, so the server just keeps queuing future messages into a
+    dead client's queue forever. The heartbeat guarantees there's always
+    real traffic on the wire, so a silent drop gets detected (and the
+    browser's EventSource reconnects) within one heartbeat interval instead
+    of remaining wedged until the next full page refresh."""
+    HEARTBEAT_INTERVAL_SECONDS = 15
+
     def event_stream():
         messages = []
         sse_clients.append(messages)
+        last_sent = time.time()
         try:
             while True:
                 if messages:
                     yield messages.pop(0)
+                    last_sent = time.time()
+                elif time.time() - last_sent >= HEARTBEAT_INTERVAL_SECONDS:
+                    yield ": heartbeat\n\n"
+                    last_sent = time.time()
                 time.sleep(0.1)
         except GeneratorExit:
             sse_clients.remove(messages)
 
-    return Response(event_stream(), mimetype="text/event-stream")
+    response = Response(event_stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    # nginx's own opt-out for buffering a proxied response, read straight off
+    # this header — works even without editing the reverse proxy's config.
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 # ==========================================

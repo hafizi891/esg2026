@@ -487,19 +487,36 @@ def api_pi_status():
 @app.route("/api/stream")
 @require_auth
 def stream():
-    """Server-Sent Events endpoint — identical pattern to the Pi app's."""
+    """Server-Sent Events endpoint — identical pattern to the Pi app's,
+    including the idle heartbeat (see app.py's stream() for the full
+    reasoning): this app is the one deliberately reachable from the open
+    internet, almost certainly through a reverse proxy for the domain/HTTPS,
+    which makes silent buffering/idle-timeout drops of a long-lived SSE
+    connection even more likely than on the Pi's direct LAN connection."""
+    HEARTBEAT_INTERVAL_SECONDS = 15
+
     def event_stream():
         messages = []
         sse_clients.append(messages)
+        last_sent = time.time()
         try:
             while True:
                 if messages:
                     yield messages.pop(0)
+                    last_sent = time.time()
+                elif time.time() - last_sent >= HEARTBEAT_INTERVAL_SECONDS:
+                    yield ": heartbeat\n\n"
+                    last_sent = time.time()
                 time.sleep(0.1)
         except GeneratorExit:
             sse_clients.remove(messages)
 
-    return Response(event_stream(), mimetype="text/event-stream")
+    response = Response(event_stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    # nginx's own opt-out for buffering a proxied response, read straight off
+    # this header — works even without editing the reverse proxy's config.
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 # ==========================================
