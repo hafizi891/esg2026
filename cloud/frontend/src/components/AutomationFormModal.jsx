@@ -142,21 +142,24 @@ function AcCommandRow({ command, onChange, onRemove, canRemove }) {
 }
 
 export default function AutomationFormModal({ automation, triggerSensors, onClose, onSave }) {
-  const [form, setForm] = useState(
-    () =>
-      automation || {
-        name: '',
-        enabled: true,
-        trigger_sensor_id: triggerSensors[0]?.id || '',
-        trigger_condition: 'motion_detected',
-        no_motion_minutes: 5,
-        action_type: 'ac_command',
-        action_ir_code: '',
-        action_switch_state: 'on',
-        guard_sensor_id: null,
-        guard_state: 'inactive',
-      }
-  )
+  // Defaults are spread first, then `automation` on top — so editing an
+  // automation saved before a field like guard_state existed still gets a
+  // real value for it (instead of silently staying undefined, which
+  // JSON.stringify then drops from the save payload entirely — the exact
+  // bug that let a guard get saved with no guard_state at all).
+  const [form, setForm] = useState(() => ({
+    name: '',
+    enabled: true,
+    trigger_sensor_id: triggerSensors[0]?.id || '',
+    trigger_condition: 'motion_detected',
+    no_motion_minutes: 5,
+    action_type: 'ac_command',
+    action_ir_code: '',
+    action_switch_state: 'on',
+    guard_sensor_id: null,
+    guard_state: 'inactive',
+    ...automation,
+  }))
 
   // no_motion_minutes is always stored in minutes (can be fractional, e.g. 0.5
   // = 30s) — these two just control what unit the number field is showing/
