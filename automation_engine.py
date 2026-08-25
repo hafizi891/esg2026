@@ -8,6 +8,14 @@ import analytics_store
 last_active_at = {}    # sensor_id -> timestamp last seen "active"
 timeout_fired = {}     # rule_id -> bool, prevents re-firing every poll cycle
 
+# sensor_id -> whether that sensor's most recent reading counts as "active"
+# right now (see _is_active) — unlike last_active_at (a timestamp that only
+# ever moves forward), this flips back to False the moment an inactive
+# reading arrives. That's what makes it usable as a live guard condition
+# (see _guard_passes): "is the mic hearing talking RIGHT NOW", not "when did
+# it last hear talking".
+current_active_state = {}
+
 # Assumed current value for each AC "aspect" (power/temp/mode/fan), regardless
 # of who last set it — an automation firing or a manual dashboard click. This
 # is what actually stops a bundled rule (e.g. power + temp + fan together)
@@ -120,6 +128,21 @@ def _event_type_for(action_type, commands):
     return action_type
 
 
+def _guard_passes(automation):
+    """An optional secondary condition, independent of the automation's own
+    trigger sensor — e.g. "don't turn off the AC / switch robot via the
+    no-motion timeout while the mic hears someone talking", since a PIR's
+    motion pulses alone can't distinguish a video call from an empty room.
+    Passes automatically (True) if no guard sensor is configured on this
+    automation — every pre-existing automation is completely unaffected."""
+    guard_sensor_id = automation.get("guard_sensor_id")
+    if not guard_sensor_id:
+        return True
+    is_active = current_active_state.get(guard_sensor_id, False)
+    required_state = automation.get("guard_state", "inactive")
+    return is_active if required_state == "active" else not is_active
+
+
 def _trigger_still_valid(automation, automations):
     """Re-checks whether the condition that made this rule fire is still true
     right now. Only matters after a deliberate delay_seconds wait — a long
@@ -136,6 +159,9 @@ def _trigger_still_valid(automation, automations):
     form). Checking the instant value would almost always see 'none' and
     wrongly abort. Instead this reuses the engine's own presence-tracking
     state, which already accounts for that pulsing behavior."""
+    if not _guard_passes(automation):
+        return False  # e.g. talking started mid-delay — abort the rest of the bundle
+
     sensor_id = automation["trigger_sensor_id"]
 
     if automation["trigger_condition"] == "no_motion_timeout":
@@ -330,6 +356,7 @@ def on_sensor_reading(sensor, reading, automations, send_ir_command, set_switch,
     no_motion_timeout rules on the same sensor."""
     active = _is_active(sensor["type"], reading.get("value"))
     sensor_id = sensor["id"]
+    current_active_state[sensor_id] = active
 
     if active:
         last_active_at[sensor_id] = time.time()
@@ -340,10 +367,12 @@ def on_sensor_reading(sensor, reading, automations, send_ir_command, set_switch,
             if automation["trigger_condition"] == "motion_detected":
                 # Logged unconditionally — separate from whether _fire() below
                 # actually sends a command (it may skip via the "already in
-                # this state" guard). This is the count of "how often was
-                # motion actually detected", not "how often did we act on it".
+                # this state" guard, or an unmet guard_sensor_id condition).
+                # This is the count of "how often was motion actually
+                # detected", not "how often did we act on it".
                 analytics_store.log_automation_event(automation["id"], "detected", True)
-                _fire(automation, automations, send_ir_command, set_switch, send_ac_command, notify_clients)
+                if _guard_passes(automation):
+                    _fire(automation, automations, send_ir_command, set_switch, send_ac_command, notify_clients)
             elif automation["trigger_condition"] == "no_motion_timeout":
                 timeout_fired[automation["id"]] = False
 
@@ -366,6 +395,12 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
 
         minutes = automation.get("no_motion_minutes") or 0
         if now - last_active_at[sensor_id] >= minutes * 60:
+            if not _guard_passes(automation):
+                # e.g. mic still hearing talking — don't mark timeout_fired:
+                # leaving it False means this same check re-runs next poll
+                # cycle (3s), so the rule fires the moment the guard clears
+                # instead of being stuck until the next fresh motion pulse.
+                continue
             # Set BEFORE firing, not after: _fire() may block for a while on a
             # delayed command, and _trigger_still_valid() reads this same flag
             # during that wait to detect whether motion resumed in the

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X, Plus, Trash2 } from 'lucide-react'
 
 const inputClass =
@@ -153,6 +153,8 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
         action_type: 'ac_command',
         action_ir_code: '',
         action_switch_state: 'on',
+        guard_sensor_id: null,
+        guard_state: 'inactive',
       }
   )
 
@@ -183,6 +185,18 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
   // engine (any sensor with an active/inactive value works) — only the
   // wording here needs to change per sensor type.
   const isAudio = triggerSensors.find((s) => s.id === form.trigger_sensor_id)?.type === 'mic'
+
+  // Guard sensors are restricted to pir/mic — the only types whose readings
+  // flow through the Pi's automation_engine.on_sensor_reading() and so have
+  // a live active/inactive state to guard against.
+  const guardSensors = triggerSensors.filter((s) => (s.type === 'pir' || s.type === 'mic') && s.id !== form.trigger_sensor_id)
+
+  // Clears a stale guard selection if the trigger sensor is changed to be
+  // the same sensor — a rule can't meaningfully guard against its own trigger.
+  useEffect(() => {
+    if (form.guard_sensor_id === form.trigger_sensor_id) set('guard_sensor_id', null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.trigger_sensor_id])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -248,6 +262,39 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
                   <option value="minutes">Minutes</option>
                 </select>
               </div>
+            </Field>
+          )}
+
+          {guardSensors.length > 0 && (
+            <Field label="Also require (optional)">
+              <select
+                className={inputClass}
+                value={form.guard_sensor_id || ''}
+                onChange={(e) => set('guard_sensor_id', e.target.value || null)}
+              >
+                <option value="">No extra condition</option>
+                {guardSensors.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {form.guard_sensor_id && (
+            <Field label="Only allow this rule to fire when that sensor is">
+              <select
+                className={inputClass}
+                value={form.guard_state || 'inactive'}
+                onChange={(e) => set('guard_state', e.target.value)}
+              >
+                <option value="inactive">Inactive (e.g. quiet / no motion) — the usual case</option>
+                <option value="active">Active (e.g. talking / motion)</option>
+              </select>
+              <p className="text-xs text-text-secondary mt-1">
+                e.g. pick the mic sensor + "Inactive" so a no-motion timeout won't turn off the AC or Switch Robot
+                while people are still talking, even though the PIR shows no motion.
+              </p>
             </Field>
           )}
 

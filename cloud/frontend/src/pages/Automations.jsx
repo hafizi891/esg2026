@@ -122,6 +122,15 @@ export default function Automations() {
       },
     },
     {
+      key: 'guard_sensor_id',
+      label: 'Guard',
+      render: (row) => {
+        if (!row.guard_sensor_id) return <span className="text-text-secondary">—</span>
+        const state = row.guard_state === 'active' ? 'active' : 'inactive'
+        return `Requires ${sensorName(row.guard_sensor_id)}: ${state}`
+      },
+    },
+    {
       key: 'enabled',
       label: 'Enabled',
       render: (row) => (

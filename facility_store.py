@@ -152,6 +152,12 @@ def add_automation(payload):
         # AC settings together (e.g. power on + set temperature to 24 in the
         # same fire), instead of needing a separate rule per setting.
         "action_ac_commands": payload.get("action_ac_commands") or [],
+        # Optional secondary condition, independent of trigger_sensor_id —
+        # e.g. "only turn off the AC via no-motion-timeout if the mic sensor
+        # is also NOT hearing talking" (guard_sensor_id=mic, guard_state=
+        # "inactive"). See automation_engine._guard_passes().
+        "guard_sensor_id": payload.get("guard_sensor_id") or None,
+        "guard_state": payload.get("guard_state") or "inactive",
     }
     facility.setdefault("automations", []).append(automation)
     save(facility)
