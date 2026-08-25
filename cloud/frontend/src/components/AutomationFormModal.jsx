@@ -179,6 +179,11 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
   const addCommand = () => setAcCommands((cmds) => [...cmds, defaultCommandFor('power')])
   const removeCommand = (index) => setAcCommands((cmds) => cmds.filter((_, i) => i !== index))
 
+  // "motion_detected"/"no_motion_timeout" are generic in the Pi's automation
+  // engine (any sensor with an active/inactive value works) — only the
+  // wording here needs to change per sensor type.
+  const isAudio = triggerSensors.find((s) => s.id === form.trigger_sensor_id)?.type === 'mic'
+
   const handleSubmit = (e) => {
     e.preventDefault()
     const no_motion_minutes = noMotionUnit === 'seconds' ? noMotionValue / 60 : noMotionValue
@@ -217,12 +222,14 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
               value={form.trigger_condition}
               onChange={(e) => set('trigger_condition', e.target.value)}
             >
-              <option value="motion_detected">Motion is detected</option>
-              <option value="no_motion_timeout">No motion for a while (auto turn-off)</option>
+              <option value="motion_detected">{isAudio ? 'Talking is detected' : 'Motion is detected'}</option>
+              <option value="no_motion_timeout">
+                {isAudio ? 'No talking for a while (auto turn-off)' : 'No motion for a while (auto turn-off)'}
+              </option>
             </select>
           </Field>
           {form.trigger_condition === 'no_motion_timeout' && (
-            <Field label="No motion for this long before triggering">
+            <Field label={isAudio ? 'No talking for this long before triggering' : 'No motion for this long before triggering'}>
               <div className="flex gap-2">
                 <input
                   type="number"

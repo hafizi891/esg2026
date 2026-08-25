@@ -3,3 +3,9 @@ Flask-Cors
 tinytuya
 python-dotenv
 paho-mqtt
+
+# Optional — only needed for the "talking detected" mic sensor (mic_listener.py).
+# app.py runs fine without these; that sensor is just disabled if they're missing.
+sounddevice
+webrtcvad
+scipy

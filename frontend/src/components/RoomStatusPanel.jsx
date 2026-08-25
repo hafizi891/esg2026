@@ -14,6 +14,7 @@ const MODES = [
 
 function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
   if (sensor.type === 'pir') return sensor.online ? (sensor.value === 'pir' ? 'Motion' : 'No motion') : 'Offline'
+  if (sensor.type === 'mic') return sensor.online ? (sensor.value === 'talking' ? 'Talking' : 'Quiet') : 'Offline'
   if (sensor.type === 'aircon') {
     if (!acStatus) return sensor.online ? 'Online' : 'Offline'
     return acStatus.power === '1' ? `On · ${acStatus.temp}°C` : 'Off'
@@ -190,7 +191,15 @@ export default function RoomStatusPanel({ room, acStatus, switchStatus, automati
         {room.sensors.map((sensor) => (
           <div key={sensor.id} className="flex items-center justify-between text-sm">
             <span>{sensor.name}</span>
-            <span className={sensor.alert ? 'text-danger' : sensor.value === 'pir' ? 'text-accent' : 'text-text-secondary'}>
+            <span
+              className={
+                sensor.alert
+                  ? 'text-danger'
+                  : sensor.value === 'pir' || sensor.value === 'talking'
+                  ? 'text-accent'
+                  : 'text-text-secondary'
+              }
+            >
               {deviceStatusLabel(sensor, { acStatus, switchStatus })}
             </span>
           </div>

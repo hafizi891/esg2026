@@ -104,10 +104,13 @@ export default function Automations() {
     {
       key: 'trigger_sensor_id',
       label: 'Trigger',
-      render: (row) =>
-        row.trigger_condition === 'no_motion_timeout'
-          ? `${sensorName(row.trigger_sensor_id)} → no motion for ${formatNoMotionDuration(row.no_motion_minutes)}`
-          : `${sensorName(row.trigger_sensor_id)} → motion detected`,
+      render: (row) => {
+        const isAudio = sensors.find((s) => s.id === row.trigger_sensor_id)?.type === 'mic'
+        const activeWord = isAudio ? 'talking' : 'motion'
+        return row.trigger_condition === 'no_motion_timeout'
+          ? `${sensorName(row.trigger_sensor_id)} → no ${activeWord} for ${formatNoMotionDuration(row.no_motion_minutes)}`
+          : `${sensorName(row.trigger_sensor_id)} → ${activeWord} detected`
+      },
     },
     {
       key: 'action_type',

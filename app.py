@@ -34,6 +34,15 @@ import automation_engine
 import mqtt_client
 import ir_codes
 
+try:
+    import mic_listener
+except ImportError as e:
+    # Optional — a Pi (or dev machine) without the wired INMP441 mic or the
+    # sounddevice/webrtcvad/scipy packages (see requirements.txt) still runs
+    # everything else fine; only the "talking detected" sensor is disabled.
+    mic_listener = None
+    print(f"Mic listener unavailable ({e}) — talking-detection sensor disabled.")
+
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -474,6 +483,37 @@ def start_pir_listeners():
     return sensor_ids
 
 
+def _on_mic_state_change(sensor_id, talking):
+    """Callback handed to mic_listener.listen_mic() — reloads the sensor
+    fresh (same reasoning as listen_pir: a rename/room move takes effect
+    without a restart) and feeds the transition through the same
+    handle_reading() path every other sensor uses, so it gets analytics
+    logging, SSE/MQTT notification, and automation triggering for free."""
+    facility = facility_store.load()
+    sensor = next((s for s in facility["sensors"] if s["id"] == sensor_id), None)
+    if sensor is None:
+        return
+    reading = {"online": True, "value": "talking" if talking else "quiet"}
+    handle_reading(sensor, reading, facility.get("automations", []))
+
+
+def start_mic_listeners():
+    """Spawn a dedicated listener thread for each "mic" sensor — mirrors
+    start_pir_listeners(), except there's no Tuya device or local LAN
+    credentials involved at all (see mic_listener.py's own hardware layer).
+    No-ops entirely if mic_listener failed to import (see the top of this
+    file)."""
+    if mic_listener is None:
+        return
+    for sensor in facility_store.load()["sensors"]:
+        if sensor["type"] == "mic":
+            threading.Thread(
+                target=mic_listener.listen_mic,
+                args=(sensor["id"], lambda talking, sid=sensor["id"]: _on_mic_state_change(sid, talking)),
+                daemon=True,
+            ).start()
+
+
 # ==========================================
 # API ROUTES
 # ==========================================
@@ -858,6 +898,7 @@ if __name__ == "__main__":
         print(f"Cloud connection error: {e}")
 
     pir_listener_sensor_ids = start_pir_listeners()
+    start_mic_listeners()
 
     t = threading.Thread(target=poll_devices, daemon=True)
     t.start()

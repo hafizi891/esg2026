@@ -87,6 +87,8 @@ def set_known_ac_state(code, value):
 def _is_active(sensor_type, value):
     if sensor_type == "pir":
         return value == "pir"
+    if sensor_type == "mic":
+        return value == "talking"
     if sensor_type == "switch":
         return bool(value)
     return False

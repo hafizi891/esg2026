@@ -37,16 +37,17 @@ function defaultCommandFor(aspect) {
   return { code: 'PowerOn', value: 'PowerOn', delay_seconds: 0 }
 }
 
-// Estimates how long this sensor's normal "no motion" gaps are between pulses
-// of the same ongoing presence — from real reading history, not a guess.
-// Looking at "none" readings and how long each lasted before the next change,
+// Estimates how long this sensor's normal "no motion"/"no talking" gaps are
+// between pulses of the same ongoing presence — from real reading history,
+// not a guess. Looking at inactive readings ("none" for PIR, "quiet" for the
+// mic — see inactiveValue) and how long each lasted before the next change,
 // capped at 2 minutes (anything longer than that is probably a genuine
 // departure, not sensor noise) and taking the 75th percentile so a handful of
 // unusually long pauses don't throw it off.
-function estimateTypicalGapSeconds(rows) {
+function estimateTypicalGapSeconds(rows, inactiveValue = 'none') {
   const gaps = []
   for (let i = 0; i < rows.length - 1; i++) {
-    if (rows[i].value === 'none') {
+    if (rows[i].value === inactiveValue) {
       const gap = rows[i + 1].timestamp - rows[i].timestamp
       if (gap > 0 && gap <= 120) gaps.push(gap)
     }
@@ -192,9 +193,16 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
     form.action_ac_commands?.length ? form.action_ac_commands : [defaultCommandFor('power')]
   )
 
-  // Warns if the "no motion" threshold is shorter than this sensor's own
-  // normal pulse gaps — that combination is what causes an automation to
-  // flicker on/off during completely normal, continuous presence.
+  // "motion_detected"/"no_motion_timeout" are generic in the automation
+  // engine (any sensor with an active/inactive value works) — only the
+  // wording here needs to change per sensor type.
+  const triggerSensor = triggerSensors.find((s) => s.id === form.trigger_sensor_id)
+  const isAudio = triggerSensor?.type === 'mic'
+
+  // Warns if the "no motion"/"no talking" threshold is shorter than this
+  // sensor's own normal pulse gaps — that combination is what causes an
+  // automation to flicker on/off during completely normal, continuous
+  // presence/conversation.
   const [typicalGapSeconds, setTypicalGapSeconds] = useState(null)
   useEffect(() => {
     if (form.trigger_condition !== 'no_motion_timeout' || !form.trigger_sensor_id) {
@@ -204,14 +212,14 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
     let cancelled = false
     getAnalytics(form.trigger_sensor_id, Date.now() / 1000 - 3600)
       .then((rows) => {
-        if (!cancelled) setTypicalGapSeconds(estimateTypicalGapSeconds(rows))
+        if (!cancelled) setTypicalGapSeconds(estimateTypicalGapSeconds(rows, isAudio ? 'quiet' : 'none'))
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.trigger_condition, form.trigger_sensor_id])
+  }, [form.trigger_condition, form.trigger_sensor_id, isAudio])
 
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }))
 
@@ -258,12 +266,14 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
               value={form.trigger_condition}
               onChange={(e) => set('trigger_condition', e.target.value)}
             >
-              <option value="motion_detected">Motion is detected</option>
-              <option value="no_motion_timeout">No motion for a while (auto turn-off)</option>
+              <option value="motion_detected">{isAudio ? 'Talking is detected' : 'Motion is detected'}</option>
+              <option value="no_motion_timeout">
+                {isAudio ? 'No talking for a while (auto turn-off)' : 'No motion for a while (auto turn-off)'}
+              </option>
             </select>
           </Field>
           {form.trigger_condition === 'no_motion_timeout' && (
-            <Field label="No motion for this long before triggering">
+            <Field label={isAudio ? 'No talking for this long before triggering' : 'No motion for this long before triggering'}>
               <div className="flex gap-2">
                 <input
                   type="number"
@@ -287,8 +297,9 @@ export default function AutomationFormModal({ automation, triggerSensors, onClos
                   <p className="flex items-start gap-1.5 mt-2 text-xs text-danger">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                     This sensor's own readings show normal pauses of up to ~{Math.round(typicalGapSeconds)}s during
-                    continuous presence — a threshold shorter than that will likely fire during those pauses, not just
-                    when the room is actually empty, causing this automation to flicker on/off.
+                    continuous {isAudio ? 'conversation' : 'presence'} — a threshold shorter than that will likely fire
+                    during those pauses, not just when the room is actually {isAudio ? 'quiet' : 'empty'}, causing this
+                    automation to flicker on/off.
                   </p>
                 )}
             </Field>

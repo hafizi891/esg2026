@@ -82,12 +82,16 @@ export default function Automations() {
     return () => clearInterval(interval)
   }, [])
 
-  // Only sensors with a real linked Tuya device AND that are actually polled
-  // continuously can meaningfully trigger a rule — "ir"/"aircon" are
-  // write-only, and "switch" is checked on-demand only (see app.py's
-  // SKIP_CONTINUOUS_POLL_TYPES) — none of them ever generate a reading
-  // event to trigger on.
-  const triggerSensors = sensors.filter((s) => s.tuya_device_id && s.type !== 'ir' && s.type !== 'aircon' && s.type !== 'switch')
+  // Only sensors that actually generate a reading event can meaningfully
+  // trigger a rule. Most types need a real linked Tuya device that's also
+  // polled continuously — "ir"/"aircon" are write-only, and "switch" is
+  // checked on-demand only (see app.py's SKIP_CONTINUOUS_POLL_TYPES). "mic"
+  // is the one exception: it's not a Tuya device at all, driven instead by
+  // its own dedicated thread (see mic_listener.py), so it has no
+  // tuya_device_id but still generates continuous readings.
+  const triggerSensors = sensors.filter(
+    (s) => (s.tuya_device_id || s.type === 'mic') && s.type !== 'ir' && s.type !== 'aircon' && s.type !== 'switch'
+  )
   const sensorName = (id) => sensors.find((s) => s.id === id)?.name || id
 
   const handleSave = async (form) => {
@@ -131,10 +135,13 @@ export default function Automations() {
     {
       key: 'trigger_sensor_id',
       label: 'Trigger',
-      render: (row) =>
-        row.trigger_condition === 'no_motion_timeout'
-          ? `${sensorName(row.trigger_sensor_id)} → no motion for ${formatNoMotionDuration(row.no_motion_minutes)}`
-          : `${sensorName(row.trigger_sensor_id)} → motion detected`,
+      render: (row) => {
+        const isAudio = sensors.find((s) => s.id === row.trigger_sensor_id)?.type === 'mic'
+        const activeWord = isAudio ? 'talking' : 'motion'
+        return row.trigger_condition === 'no_motion_timeout'
+          ? `${sensorName(row.trigger_sensor_id)} → no ${activeWord} for ${formatNoMotionDuration(row.no_motion_minutes)}`
+          : `${sensorName(row.trigger_sensor_id)} → ${activeWord} detected`
+      },
     },
     {
       key: 'action_type',

@@ -14,6 +14,8 @@ export function roomState(room, acStatus) {
   if (room.sensors.length === 0) return 'empty'
   const pir = room.sensors.find((s) => s.type === 'pir')
   if (pir?.online && pir.value === 'pir') return 'motion'
+  const mic = room.sensors.find((s) => s.type === 'mic')
+  if (mic?.online && mic.value === 'talking') return 'motion'
   const hasAc = room.sensors.some((s) => s.type === 'aircon')
   if (hasAc && acStatus?.power === '1') return 'ac-running'
   return 'idle'
@@ -34,6 +36,14 @@ export function roomStatusLine(room, { acStatus, lastMotionSeconds } = {}) {
       parts.push(rel ? `No motion ${rel}` : 'No motion')
     }
   }
+  const mic = room.sensors.find((s) => s.type === 'mic')
+  if (mic) {
+    if (!mic.online) {
+      parts.push('Mic offline')
+    } else {
+      parts.push(mic.value === 'talking' ? 'Talking' : 'Quiet')
+    }
+  }
   const ac = room.sensors.find((s) => s.type === 'aircon')
   if (ac && acStatus) {
     parts.push(acStatus.power === '1' ? `AC on, holding ${acStatus.temp}°C` : 'AC off')
@@ -41,12 +51,21 @@ export function roomStatusLine(room, { acStatus, lastMotionSeconds } = {}) {
   return parts.join(' · ')
 }
 
-// Larger headline shown in the room status panel, e.g. "Room is quiet".
+// Larger headline shown in the room status panel, e.g. "Room is quiet". PIR
+// takes priority when both exist (motion is a stronger occupancy signal than
+// audio alone); mic fills in on its own for rooms with no PIR sensor.
 export function roomHeadline(room) {
   const pir = room.sensors.find((s) => s.type === 'pir')
-  if (!pir) return room.name
-  if (!pir.online) return 'Motion sensor offline'
-  return pir.value === 'pir' ? 'Someone is in the room' : 'Room is quiet'
+  if (pir) {
+    if (!pir.online) return 'Motion sensor offline'
+    return pir.value === 'pir' ? 'Someone is in the room' : 'Room is quiet'
+  }
+  const mic = room.sensors.find((s) => s.type === 'mic')
+  if (mic) {
+    if (!mic.online) return 'Mic offline'
+    return mic.value === 'talking' ? 'People are talking' : 'Room is quiet'
+  }
+  return room.name
 }
 
 export function roomDescription(room, { acStatus, lastMotionSeconds } = {}) {
@@ -59,7 +78,9 @@ export function roomDescription(room, { acStatus, lastMotionSeconds } = {}) {
       ? `No motion for ${rel.replace(' ago', '')}.`
       : null
     : null
+  const mic = room.sensors.find((s) => s.type === 'mic')
+  const talkingPart = mic ? (mic.value === 'talking' ? 'Talking detected.' : null) : null
   const ac = room.sensors.find((s) => s.type === 'aircon')
   const acPart = ac && acStatus ? (acStatus.power === '1' ? `AC is on, holding ${acStatus.temp}°C.` : 'AC is off.') : null
-  return [motionPart, acPart].filter(Boolean).join(' ')
+  return [motionPart, talkingPart, acPart].filter(Boolean).join(' ')
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 
-const TYPES = ['temperature', 'pir', 'switch', 'ir', 'other']
+const TYPES = ['temperature', 'pir', 'switch', 'ir', 'mic', 'other']
 const inputClass =
   'w-full bg-black/3 border border-black/15 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent'
 
@@ -66,14 +66,21 @@ export default function SensorFormModal({ sensor, rooms, onClose, onSave }) {
               ))}
             </select>
           </Field>
-          <Field label="Tuya Device ID">
-            <input
-              className={inputClass}
-              value={form.tuya_device_id || ''}
-              onChange={(e) => set('tuya_device_id', e.target.value)}
-              required
-            />
-          </Field>
+          {form.type !== 'mic' && (
+            <Field label="Tuya Device ID">
+              <input
+                className={inputClass}
+                value={form.tuya_device_id || ''}
+                onChange={(e) => set('tuya_device_id', e.target.value)}
+                required
+              />
+            </Field>
+          )}
+          {form.type === 'mic' && (
+            <p className="text-xs text-text-secondary">
+              No Tuya device needed — this is the mic wired directly to the Pi's sound card (see mic_listener.py).
+            </p>
+          )}
           {form.type === 'temperature' && (
             <>
               <div className="grid grid-cols-2 gap-3">
