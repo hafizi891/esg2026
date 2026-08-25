@@ -27,6 +27,7 @@ export const getResidents = () => request('/residents')
 export const sendIr = (code) => request('/send_ir', { method: 'POST', body: JSON.stringify({ code }) })
 export const sendAcCommand = (code, value) => request('/send_ac_command', { method: 'POST', body: JSON.stringify({ code, value }) })
 export const getAcStatus = () => request('/ac_status')
+export const getIrStatus = () => request('/ir_status')
 export const resyncAcState = (state) => request('/resync_ac_state', { method: 'POST', body: JSON.stringify(state) })
 
 export const toggleSwitch = (value) => request('/toggle_switch', { method: 'POST', body: JSON.stringify({ value }) })
@@ -52,3 +53,5 @@ export const scanDevices = () => request('/scan_devices', { method: 'POST' })
 
 export const getMqttConfig = () => request('/mqtt')
 export const updateMqttConfig = (config) => request('/mqtt', { method: 'PUT', body: JSON.stringify(config) })
+export const getMqttStatus = () => request('/mqtt/status')
+export const getMqttActivity = (limit) => request(`/mqtt/activity${limit ? `?limit=${limit}` : ''}`)

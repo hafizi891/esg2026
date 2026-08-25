@@ -41,6 +41,48 @@ def get_code(code, value):
     return load_codes().get(_key(code, value))
 
 
+def needed_pairs():
+    """Every distinct (code, value) an ac_command automation actually sends —
+    the full set capture_ir_codes.py needs to walk through, and what a
+    "N of M captured" status readout is measured against."""
+    facility = facility_store.load()
+    pairs = set()
+    for automation in facility.get("automations", []):
+        if automation.get("action_type") != "ac_command":
+            continue
+        for cmd in automation.get("action_ac_commands") or []:
+            pairs.add((cmd.get("code"), cmd.get("value")))
+    return sorted(pairs, key=lambda p: (str(p[0]), str(p[1])))
+
+
+def capture_status():
+    pairs = needed_pairs()
+    captured = sum(1 for code, value in pairs if has_code(code, value))
+    return {"captured": captured, "needed": len(pairs)}
+
+
+# The full set of buttons the dashboard's manual AC remote (AcRemoteModal.jsx)
+# can send — same MODES/FAN_SPEEDS/temperature range as that component, kept
+# in sync by hand since one's Python and the other's JS. This is deliberately
+# broader than needed_pairs(): capturing this whole set means manual control
+# from the dashboard goes local too, not just whatever your automations
+# happen to reference.
+FULL_MODES = [0, 1, 2, 3, 4]  # Cool, Heat, Auto, Fan, Dry
+FULL_FAN_SPEEDS = [0, 1, 2, 3]  # Auto, Low, Medium, High
+FULL_TEMP_RANGE = range(16, 31)  # 16-30°C inclusive
+
+
+def full_remote_pairs():
+    """Every button on the real remote worth capturing: both power states,
+    every mode, every fan speed, and the entire temperature range — not just
+    whatever a handful of automations happen to use."""
+    pairs = [("PowerOn", "PowerOn"), ("PowerOff", "PowerOff")]
+    pairs += [("M", m) for m in FULL_MODES]
+    pairs += [("F", f) for f in FULL_FAN_SPEEDS]
+    pairs += [("T", t) for t in FULL_TEMP_RANGE]
+    return pairs
+
+
 def ir_blaster_sensor():
     facility = facility_store.load()
     sensor = next((s for s in facility["sensors"] if s["type"] == "ir"), None)

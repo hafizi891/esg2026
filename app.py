@@ -98,6 +98,23 @@ AC_CODE_MAP = {
 }
 
 
+def _notify_device_update(sensor_type, online, value):
+    """Pushes a live update to any connected browser (local or cloud, via the
+    MQTT mirror in notify_clients()) for the one sensor of this type — used
+    by send_ac_command()/set_switch_state()/resync_ac_state() so a change
+    made from anywhere (this app's own dashboard, an automation, or the
+    cloud companion) shows up live everywhere else too, the same way motion
+    updates already do. Without this, an already-open dashboard would only
+    pick up the change the next time something reloads it."""
+    facility = facility_store.load()
+    sensor = next((s for s in facility["sensors"] if s["type"] == sensor_type), None)
+    if sensor is None:
+        return
+    reading = {"online": online, "value": value}
+    live_readings[sensor["id"]] = reading
+    notify_clients("sensor_update", {"id": sensor["id"], **reading})
+
+
 def send_ac_command(code, value):
     """Send a real air-conditioner command — locally, for free, if this exact
     (code, value) has been captured via capture_ir_codes.py; otherwise via
@@ -127,6 +144,7 @@ def send_ac_command(code, value):
     # it would wrongly skip re-sending a setting on the next automation fire
     # because it thinks nothing changed.
     automation_engine.set_known_ac_state(code, value)
+    _notify_device_update("aircon", True, None)
 
     return result
 
@@ -153,6 +171,7 @@ def set_switch_state(value):
         'commands': [{'code': 'switch_1', 'value': bool(value)}]
     })
     mqtt_client.publish("commands/switch", {"value": bool(value)})
+    _notify_device_update("switch", True, bool(value))
     return result
 
 
@@ -169,6 +188,17 @@ def dispatch_remote_command(payload):
         set_switch_state(bool(payload.get("value")))
     elif cmd_type == "send_ir":
         send_ir_command(payload.get("code"))
+    elif cmd_type == "resync_ac_state":
+        resync_ac_state(payload.get("data") or {})
+    elif cmd_type == "create_automation":
+        facility_store.add_automation(payload.get("data") or {})
+        _publish_automations_state()
+    elif cmd_type == "update_automation":
+        facility_store.update_automation(payload.get("id"), payload.get("data") or {})
+        _publish_automations_state()
+    elif cmd_type == "delete_automation":
+        facility_store.delete_automation(payload.get("id"))
+        _publish_automations_state()
     else:
         print(f"Remote command: unknown type {cmd_type!r}")
 
@@ -338,6 +368,22 @@ def _pir_listen_once(sensor, stop_flag):
         d.set_socketTimeout(30)
         print(f"PIR listener connected for {sensor['name']} ({sensor_id}) at {sensor['local_ip']}")
         _pir_heartbeats[sensor_id] = time.time()
+
+        # d.receive() below only reports a NEW push from the device — it
+        # stays silent as long as nothing changes, which could be forever if
+        # motion doesn't happen to occur right after connecting. Without this,
+        # a fresh (re)connect leaves the dashboard showing stale/offline data
+        # indefinitely even though the device is fully reachable, simply
+        # because nothing has changed yet to trigger a push.
+        try:
+            status = d.status()
+            dps = status.get("dps") if status else None
+            if dps and "1" in dps:
+                reading = {"online": True, "value": str(dps["1"]).lower()}
+                facility = facility_store.load()
+                handle_reading(sensor, reading, facility.get("automations", []))
+        except Exception as e:
+            print(f"PIR listener: initial status query failed for {sensor_id}: {e}")
 
         consecutive_timeouts = 0
         while not stop_flag.is_set():
@@ -601,10 +647,21 @@ def api_resident_detail(resident_id):
     return jsonify(resident) if resident else (jsonify({"error": "not found"}), 404)
 
 
+def _publish_automations_state():
+    """Mirrors the full current automations list to MQTT (retained), so a
+    cloud companion always has a live, accurate view instead of a stale
+    manually-maintained snapshot — called after every create/update/delete,
+    whether it came from this app's own REST API or a remote command."""
+    automations = facility_store.load().get("automations", [])
+    mqtt_client.publish("state/automations", automations, retain=True)
+
+
 @app.route("/api/automations", methods=["GET", "POST"])
 def api_automations():
     if request.method == "POST":
-        return jsonify(facility_store.add_automation(request.json)), 201
+        automation = facility_store.add_automation(request.json)
+        _publish_automations_state()
+        return jsonify(automation), 201
     return jsonify(facility_store.load().get("automations", []))
 
 
@@ -612,8 +669,12 @@ def api_automations():
 def api_automation_detail(automation_id):
     if request.method == "DELETE":
         ok = facility_store.delete_automation(automation_id)
+        if ok:
+            _publish_automations_state()
         return ("", 204) if ok else (jsonify({"error": "not found"}), 404)
     automation = facility_store.update_automation(automation_id, request.json)
+    if automation:
+        _publish_automations_state()
     return jsonify(automation) if automation else (jsonify({"error": "not found"}), 404)
 
 
@@ -622,6 +683,28 @@ def api_mqtt():
     if request.method == "PUT":
         return jsonify(facility_store.update_mqtt_config(request.json))
     return jsonify(mqtt_client.get_config())
+
+
+@app.route("/api/mqtt/status")
+def api_mqtt_status():
+    """Read-only status for the local MQTT activity tab — deliberately never
+    includes the broker password (unlike GET /api/mqtt above, which the
+    Settings form needs for editing)."""
+    config = mqtt_client.get_config()
+    return jsonify({
+        "enabled": config["enabled"],
+        "broker_host": config["broker_host"],
+        "broker_port": config["broker_port"],
+        "topic_prefix": config["topic_prefix"],
+        "has_credentials": bool(config["username"]),
+        "listener": mqtt_client.get_listener_status(),
+    })
+
+
+@app.route("/api/mqtt/activity")
+def api_mqtt_activity():
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify(mqtt_client.get_activity_log()[-limit:])
 
 
 @app.route("/api/send_ir", methods=["POST"])
@@ -661,15 +744,22 @@ def api_ac_status():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/resync_ac_state", methods=["POST"])
-def api_resync_ac_state():
+@app.route("/api/ir_status")
+def api_ir_status():
+    """How many of the AC settings actually used by automations have a
+    locally-captured IR code (see ir_codes.py / capture_ir_codes.py) versus
+    still falling back to Tuya's cloud endpoint — purely a read-only status
+    readout, doesn't touch any automation config."""
+    return jsonify(ir_codes.capture_status())
+
+
+def resync_ac_state(data):
     """Manually correct the automation engine's assumed AC state to match
     what someone actually sees on the physical unit — e.g. after the AC's
     own remote was used directly, which neither this app nor even Tuya's
     cloud can ever detect (the IR blaster only transmits, it has no feedback
     path from the AC). This ONLY updates our internal bookkeeping — no real
     command is sent, since the physical device is already in this state."""
-    data = request.json or {}
     if data.get("power") is not None:
         automation_engine.set_known_ac_state("PowerOn" if data["power"] else "PowerOff", None)
     if data.get("temp") is not None:
@@ -678,6 +768,12 @@ def api_resync_ac_state():
         automation_engine.set_known_ac_state("M", data["mode"])
     if data.get("fan") is not None:
         automation_engine.set_known_ac_state("F", data["fan"])
+    _notify_device_update("aircon", True, None)
+
+
+@app.route("/api/resync_ac_state", methods=["POST"])
+def api_resync_ac_state():
+    resync_ac_state(request.json or {})
     return jsonify({"success": True})
 
 
@@ -768,5 +864,6 @@ if __name__ == "__main__":
 
     threading.Thread(target=mqtt_client.start_remote_listener, args=(dispatch_remote_command,), daemon=True).start()
     threading.Thread(target=send_heartbeat, daemon=True).start()
+    _publish_automations_state()  # retained — a cloud companion connecting later gets this immediately
 
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

@@ -32,6 +32,10 @@ export const toggleSwitch = (value) => request('/toggle_switch', { method: 'POST
 export const getSwitchStatus = () => request('/switch_status')
 
 export const getAutomations = () => request('/automations')
+export const createAutomation = (data) => request('/automations', { method: 'POST', body: JSON.stringify(data) })
+export const updateAutomation = (id, data) =>
+  request(`/automations/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) })
+export const deleteAutomation = (id) => request(`/automations/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
 export const getAutomationEvents = (since, limit) => {
   const params = new URLSearchParams()

@@ -66,6 +66,11 @@ app.secret_key = os.environ.get("CLOUD_SESSION_SECRET") or secrets.token_hex(32)
 live_sensors = {}          # sensor_id -> last-known reading
 automation_log = []        # most recent automation firings, oldest first
 MAX_LOG = 500
+# Seeded from the static snapshot so the page has something to show before
+# the Pi's retained "state/automations" message arrives (published on every
+# Pi startup and after every create/update/delete — see app.py's
+# _publish_automations_state()); overwritten wholesale the moment it does.
+automations = list(FACILITY_LAYOUT["automations"])
 ac_status_cache = {}        # built up from mirrored "commands/ac" messages
 switch_status_cache = None  # {"online": True, "value": bool} from "commands/switch"
 
@@ -139,8 +144,12 @@ def notify_clients(event_type, data):
 
 
 def _handle_state_message(event_type, payload):
+    global automations
     if event_type == "heartbeat":
         pass  # nothing to do — just arriving at all is what keeps mqtt_status["last_message_at"] fresh
+    elif event_type == "automations":
+        automations = payload  # full replace — the Pi always publishes its complete current list, retained
+        notify_clients("automations", payload)
     elif event_type == "sensor_update":
         live_sensors[payload.get("id")] = payload
         notify_clients("sensor_update", payload)
@@ -307,10 +316,34 @@ def api_residents():
     return jsonify(FACILITY_LAYOUT["residents"])
 
 
-@app.route("/api/automations")
+@app.route("/api/automations", methods=["GET", "POST"])
 @require_auth
 def api_automations():
-    return jsonify(FACILITY_LAYOUT["automations"])
+    if request.method == "GET":
+        return jsonify(automations)
+    # POST: create. Fire-and-forget over MQTT — the Pi is the source of
+    # truth and mirrors its resulting list back on "state/automations",
+    # which is what actually updates `automations` above (see
+    # _handle_state_message). Nothing is applied optimistically here.
+    data = request.json or {}
+    try:
+        publish_command({"type": "create_automation", "data": data})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/automations/<automation_id>", methods=["PUT", "DELETE"])
+@require_auth
+def api_automation_detail(automation_id):
+    try:
+        if request.method == "PUT":
+            publish_command({"type": "update_automation", "id": automation_id, "data": request.json or {}})
+        else:
+            publish_command({"type": "delete_automation", "id": automation_id})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/automation_events")

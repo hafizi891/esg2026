@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText, LogOut, Wifi, Cpu } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
+import Automations from './pages/Automations'
 import Logs from './pages/Logs'
 import Mqtt from './pages/Mqtt'
 import Pi from './pages/Pi'
@@ -139,7 +140,7 @@ function AuthenticatedApp({ onLogout }) {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/analytics" element={<CloudUnavailableNotice page="Analytics" />} />
-          <Route path="/automations" element={<CloudUnavailableNotice page="Automations" />} />
+          <Route path="/automations" element={<Automations />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/mqtt" element={<Mqtt />} />
           <Route path="/pi" element={<Pi />} />

@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText } from 'lucide-react'
+import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText, Radio } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
 import Analytics from './pages/Analytics'
 import Automations from './pages/Automations'
 import Logs from './pages/Logs'
+import MqttActivity from './pages/MqttActivity'
 import { useToast } from './context/ToastContext.jsx'
 import { getAutomations, getSensors, getRooms } from './api/client'
 
@@ -37,6 +38,9 @@ function Sidebar() {
         </NavLink>
         <NavLink to="/logs" className={linkClass}>
           <ScrollText size={18} /> Logs
+        </NavLink>
+        <NavLink to="/mqtt" className={linkClass}>
+          <Radio size={18} /> MQTT
         </NavLink>
         <NavLink to="/settings" className={linkClass}>
           <SettingsIcon size={18} /> Settings
@@ -109,6 +113,7 @@ export default function App() {
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/automations" element={<Automations />} />
           <Route path="/logs" element={<Logs />} />
+          <Route path="/mqtt" element={<MqttActivity />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </main>

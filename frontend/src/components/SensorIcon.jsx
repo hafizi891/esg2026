@@ -15,7 +15,7 @@ function statusColor(sensor) {
   return 'bg-success/10 text-success border-success/40'
 }
 
-export default function SensorIcon({ sensor }) {
+export default function SensorIcon({ sensor, large = false }) {
   const Icon = ICONS[sensor.type] || CircleDashed
   const label =
     sensor.type === 'temperature'
@@ -26,10 +26,12 @@ export default function SensorIcon({ sensor }) {
 
   return (
     <div
-      className={`w-11 h-11 rounded-full border-2 flex items-center justify-center ${statusColor(sensor)}`}
+      className={`rounded-full border-2 flex items-center justify-center ${
+        large ? 'w-16 h-16' : 'w-11 h-11'
+      } ${statusColor(sensor)}`}
       title={label}
     >
-      <Icon size={18} />
+      <Icon size={large ? 26 : 18} />
     </div>
   )
 }
