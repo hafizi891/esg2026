@@ -13,6 +13,7 @@ const ACTION_TYPE_TO_SENSOR_TYPE = { ac_command: 'aircon', send_ir: 'ir', toggle
 
 function formatSingleEventType(eventType) {
   if (eventType === 'detected') return 'Motion detected (trigger checked)'
+  if (eventType === 'held_off') return 'Held off — waiting for quiet'
   if (eventType === 'power_on') return 'Turned AC on'
   if (eventType === 'power_off') return 'Turned AC off'
   if (eventType.startsWith('temp_')) return `Set temperature to ${eventType.slice(5)}°C`
@@ -133,15 +134,18 @@ export default function Logs() {
     {
       key: 'success',
       label: 'Result',
-      render: (row) => (
-        <span
-          className={`px-2 py-1 rounded text-xs font-medium ${
-            row.success ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger'
-          }`}
-        >
-          {row.success ? 'Success' : 'Failed'}
-        </span>
-      ),
+      render: (row) =>
+        row.event_type === 'held_off' ? (
+          <span className="px-2 py-1 rounded text-xs font-medium bg-warning/20 text-warning">Held</span>
+        ) : (
+          <span
+            className={`px-2 py-1 rounded text-xs font-medium ${
+              row.success ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger'
+            }`}
+          >
+            {row.success ? 'Success' : 'Failed'}
+          </span>
+        ),
     },
   ]
 

@@ -617,6 +617,15 @@ def api_automation_events():
     )
 
 
+@app.route("/api/automation_holds")
+def api_automation_holds():
+    """Which no_motion_timeout automations are RIGHT NOW otherwise due but
+    held back by an unmet guard condition — for a live "waiting for quiet"
+    note in the dashboard, distinct from the Logs page's historical
+    held_off entries."""
+    return jsonify(automation_engine.get_held_by_guard())
+
+
 scan_state = {"running": False}
 SCAN_ROUNDS = 4
 SCAN_ROUND_SECONDS = 5

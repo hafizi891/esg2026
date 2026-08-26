@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Minus, Plus } from 'lucide-react'
-import { sendAcCommand, toggleSwitch, getAutomationEvents } from '../api/client'
+import { Clock, Minus, Plus } from 'lucide-react'
+import { sendAcCommand, toggleSwitch, getAutomationEvents, getAutomationHolds } from '../api/client'
 import { useToast } from '../context/ToastContext.jsx'
 import { roomHeadline, roomDescription } from '../lib/roomStatus'
 
@@ -45,20 +45,34 @@ function eventLabel(eventType) {
 export default function RoomStatusPanel({ room, acStatus, switchStatus, automations, onCommandSent }) {
   const [sending, setSending] = useState(false)
   const [events, setEvents] = useState([])
+  const [holds, setHolds] = useState({})
   const showToast = useToast()
+
+  const roomAutomationIds = new Set(
+    room ? automations.filter((a) => room.sensors.some((s) => s.id === a.trigger_sensor_id)).map((a) => a.id) : []
+  )
 
   useEffect(() => {
     if (!room) return
     getAutomationEvents(undefined, 300)
       .then((rows) => {
-        const roomAutomationIds = new Set(
-          automations.filter((a) => room.sensors.some((s) => s.id === a.trigger_sensor_id)).map((a) => a.id)
-        )
         const relevant = rows.filter((r) => roomAutomationIds.has(r.automation_id))
         setEvents(relevant.slice(-10).reverse())
       })
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, automations])
+
+  // Live "waiting for quiet" status — polled rather than pushed over SSE
+  // since it's cheap, low-stakes UI, and a missed poll just means a few
+  // extra seconds of staleness rather than a wrong dashboard state.
+  useEffect(() => {
+    if (!room) return
+    const poll = () => getAutomationHolds().then(setHolds).catch(() => {})
+    poll()
+    const interval = setInterval(poll, 5000)
+    return () => clearInterval(interval)
+  }, [room])
 
   if (!room) {
     return <aside className="w-80 shrink-0 text-text-secondary text-sm p-6">Select a room to see its detail.</aside>
@@ -110,6 +124,18 @@ export default function RoomStatusPanel({ room, acStatus, switchStatus, automati
         </div>
         <h2 className="text-lg font-bold leading-tight mb-1">{roomHeadline(room)}</h2>
         <p className="text-sm text-text-secondary">{roomDescription(room, { acStatus })}</p>
+        {Object.entries(holds)
+          .filter(([id]) => roomAutomationIds.has(id))
+          .map(([id, hold]) => {
+            const automationName = automations.find((a) => a.id === id)?.name || 'A rule'
+            const guardName = room.sensors.find((s) => s.id === hold.guard_sensor_id)?.name || 'a sensor'
+            return (
+              <p key={id} className="flex items-start gap-1.5 mt-2 text-xs text-warning">
+                <Clock size={13} className="shrink-0 mt-0.5" />
+                Waiting for quiet before "{automationName}" fires — {guardName} is still active.
+              </p>
+            )
+          })}
       </div>
 
       {ac && (

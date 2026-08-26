@@ -25,6 +25,18 @@ current_active_state = {}
 # with no guard configured on it at all).
 last_guard_active_at = {}
 
+# automation_id -> {"guard_sensor_id", "held_since"} — present ONLY while a
+# no_motion_timeout automation has otherwise reached its threshold but is
+# being held back by an unmet guard condition; absent the rest of the time
+# (not due yet, guard passing, no guard configured, already fired). Purely
+# for dashboard/Logs visibility into "why hasn't this fired yet" — doesn't
+# affect firing logic at all. See get_held_by_guard().
+held_by_guard = {}
+
+
+def get_held_by_guard():
+    return dict(held_by_guard)
+
 # Assumed current value for each AC "aspect" (power/temp/mode/fan), regardless
 # of who last set it — an automation firing or a manual dashboard click. This
 # is what actually stops a bundled rule (e.g. power + temp + fan together)
@@ -405,6 +417,22 @@ def on_sensor_reading(sensor, reading, automations, send_ir_command, set_switch,
                 timeout_fired[automation["id"]] = False
 
 
+def _enter_held(automation, guard_sensor_id, reason):
+    """Records the START of a guard hold — a no_motion_timeout automation
+    that's otherwise due but blocked. Logged/printed only on the transition
+    into "held" (not every poll cycle this stays true) so a long hold
+    doesn't spam the console or the Logs page with dozens of near-identical
+    rows. See held_by_guard / get_held_by_guard() for the live-status
+    reader the dashboard polls."""
+    aid = automation["id"]
+    if aid in held_by_guard:
+        return  # already held — this is a continuation, not a new hold
+    held_by_guard[aid] = {"guard_sensor_id": guard_sensor_id, "held_since": time.time()}
+    name = automation.get("name", aid)
+    print(f"[{time.strftime('%H:%M:%S')}] Automation '{name}': {reason}")
+    analytics_store.log_automation_event(aid, "held_off", True)
+
+
 def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, notify_clients):
     """Call every poll cycle regardless of change — fires no_motion_timeout
     rules once their configured idle window has elapsed."""
@@ -412,6 +440,8 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
     for automation in automations:
         if not automation.get("enabled") or automation["trigger_condition"] != "no_motion_timeout":
             continue
+
+        aid = automation["id"]
 
         # Keep the guard's own countdown continuously refreshed for as long
         # as its sensor remains active. on_sensor_reading() only stamps
@@ -425,56 +455,68 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
         guard_sensor_id = automation.get("guard_sensor_id")
         guard_wants_inactive = bool(guard_sensor_id) and automation.get("guard_state", "inactive") != "active"
         if guard_wants_inactive and current_active_state.get(guard_sensor_id, False):
-            last_guard_active_at[automation["id"]] = now
+            last_guard_active_at[aid] = now
 
-        if timeout_fired.get(automation["id"]):
+        if timeout_fired.get(aid):
+            held_by_guard.pop(aid, None)
             continue
 
         sensor_id = automation["trigger_sensor_id"]
         if sensor_id not in last_active_at:
             # Not observed yet this process lifetime — skip rather than treating
             # as epoch 0, which would fire immediately on every app restart.
+            held_by_guard.pop(aid, None)
             continue
 
         minutes = automation.get("no_motion_minutes") or 0
-        if now - last_active_at[sensor_id] >= minutes * 60:
-            # The guard's own countdown must ALSO have fully elapsed — not
-            # just be momentarily clear right this instant. This is what
-            # makes talking behave like a fresh PIR pulse: it requires a
-            # full fresh no_motion_minutes of quiet afterward, not just
-            # "happens to be quiet at this exact poll".
-            if guard_wants_inactive:
-                last_guard = last_guard_active_at.get(automation["id"])
-                if last_guard is not None and now - last_guard < minutes * 60:
-                    print(
-                        f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
-                        f"no-motion timeout reached but guard sensor {guard_sensor_id!r} was active "
-                        f"{now - last_guard:.0f}s ago (needs {minutes * 60:.0f}s of quiet) — countdown reset, holding off"
-                    )
-                    continue
-            if not _guard_passes(automation):
-                # Instantaneous safety net for the exact firing moment —
-                # normally redundant with the window check above, but covers
-                # a talking burst landing between on_sensor_reading() setting
-                # last_guard_active_at and this check running.
-                print(
-                    f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
-                    f"no-motion timeout reached but guard sensor {guard_sensor_id!r} is currently active "
-                    f"(needs {automation.get('guard_state', 'inactive')}) — holding off"
+        if now - last_active_at[sensor_id] < minutes * 60:
+            held_by_guard.pop(aid, None)  # not due yet (e.g. a fresh motion pulse) — not a guard hold
+            continue
+
+        # From here on the no-motion side IS satisfied — anything that
+        # stops it now is specifically the guard, so held_by_guard reflects
+        # that accurately.
+        if guard_wants_inactive:
+            last_guard = last_guard_active_at.get(aid)
+            if last_guard is not None and now - last_guard < minutes * 60:
+                # The guard's own countdown must ALSO have fully elapsed —
+                # not just be momentarily clear right this instant. This is
+                # what makes talking behave like a fresh PIR pulse: it
+                # requires a full fresh no_motion_minutes of quiet
+                # afterward, not just "happens to be quiet at this poll".
+                _enter_held(
+                    automation,
+                    guard_sensor_id,
+                    f"no-motion timeout reached but guard sensor {guard_sensor_id!r} was active "
+                    f"{now - last_guard:.0f}s ago (needs {minutes * 60:.0f}s of quiet) — countdown reset, holding off",
                 )
                 continue
-            if guard_wants_inactive:
-                last_guard = last_guard_active_at.get(automation["id"])
-                since = f"{now - last_guard:.0f}s ago" if last_guard is not None else "never this session"
-                print(
-                    f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
-                    f"no-motion timeout reached and guard sensor {guard_sensor_id!r} last active {since} "
-                    f"(needed {minutes * 60:.0f}s of quiet) — firing"
-                )
-            # Set BEFORE firing, not after: _fire() may block for a while on a
-            # delayed command, and _trigger_still_valid() reads this same flag
-            # during that wait to detect whether motion resumed in the
-            # meantime. Setting it after firing would mean the flag is still
-            # (wrongly) False for the whole duration of the wait.
-            timeout_fired[automation["id"]] = True
-            _fire(automation, automations, send_ir_command, set_switch, send_ac_command, notify_clients)
+        if not _guard_passes(automation):
+            # Instantaneous safety net for the exact firing moment —
+            # normally redundant with the window check above, but covers a
+            # talking burst landing between on_sensor_reading() setting
+            # last_guard_active_at and this check running.
+            _enter_held(
+                automation,
+                guard_sensor_id,
+                f"no-motion timeout reached but guard sensor {guard_sensor_id!r} is currently active "
+                f"(needs {automation.get('guard_state', 'inactive')}) — holding off",
+            )
+            continue
+
+        held_by_guard.pop(aid, None)  # resolved — firing now
+        if guard_wants_inactive:
+            last_guard = last_guard_active_at.get(aid)
+            since = f"{now - last_guard:.0f}s ago" if last_guard is not None else "never this session"
+            print(
+                f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', aid)}': "
+                f"no-motion timeout reached and guard sensor {guard_sensor_id!r} last active {since} "
+                f"(needed {minutes * 60:.0f}s of quiet) — firing"
+            )
+        # Set BEFORE firing, not after: _fire() may block for a while on a
+        # delayed command, and _trigger_still_valid() reads this same flag
+        # during that wait to detect whether motion resumed in the
+        # meantime. Setting it after firing would mean the flag is still
+        # (wrongly) False for the whole duration of the wait.
+        timeout_fired[aid] = True
+        _fire(automation, automations, send_ir_command, set_switch, send_ac_command, notify_clients)

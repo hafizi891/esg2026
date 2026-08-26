@@ -49,6 +49,8 @@ export const getAutomationEvents = (since, limit) => {
   return request(`/automation_events${qs ? `?${qs}` : ''}`)
 }
 
+export const getAutomationHolds = () => request('/automation_holds')
+
 export const scanDevices = () => request('/scan_devices', { method: 'POST' })
 
 export const getMqttConfig = () => request('/mqtt')
