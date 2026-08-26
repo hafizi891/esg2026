@@ -410,6 +410,21 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
     for automation in automations:
         if not automation.get("enabled") or automation["trigger_condition"] != "no_motion_timeout":
             continue
+
+        # Keep the guard's own countdown continuously refreshed for as long
+        # as its sensor remains active. on_sensor_reading() only stamps
+        # last_guard_active_at once, at the moment activity STARTS — the mic
+        # only reports real transitions, not a repeated "still talking"
+        # ping. Without this refresh, a talking session LONGER than
+        # no_motion_minutes would look stale (and therefore already
+        # elapsed) the instant it finally stops, letting the automation
+        # fire immediately instead of requiring a fresh full quiet period —
+        # exactly the "long talking session" case this guards against.
+        guard_sensor_id = automation.get("guard_sensor_id")
+        guard_wants_inactive = bool(guard_sensor_id) and automation.get("guard_state", "inactive") != "active"
+        if guard_wants_inactive and current_active_state.get(guard_sensor_id, False):
+            last_guard_active_at[automation["id"]] = now
+
         if timeout_fired.get(automation["id"]):
             continue
 
@@ -421,15 +436,12 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
 
         minutes = automation.get("no_motion_minutes") or 0
         if now - last_active_at[sensor_id] >= minutes * 60:
-            guard_sensor_id = automation.get("guard_sensor_id")
-            # If the guard wants the sensor "inactive" to fire, its own
-            # countdown (reset by on_sensor_reading() every time the guard
-            # sensor is active — see last_guard_active_at) must ALSO have
-            # fully elapsed — not just be momentarily clear right this
-            # instant. This is what makes talking behave like a fresh PIR
-            # pulse: it requires a full fresh no_motion_minutes of quiet
-            # afterward, not just "happens to be quiet at this exact poll".
-            if guard_sensor_id and automation.get("guard_state", "inactive") != "active":
+            # The guard's own countdown must ALSO have fully elapsed — not
+            # just be momentarily clear right this instant. This is what
+            # makes talking behave like a fresh PIR pulse: it requires a
+            # full fresh no_motion_minutes of quiet afterward, not just
+            # "happens to be quiet at this exact poll".
+            if guard_wants_inactive:
                 last_guard = last_guard_active_at.get(automation["id"])
                 if last_guard is not None and now - last_guard < minutes * 60:
                     print(
