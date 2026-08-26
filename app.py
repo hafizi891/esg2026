@@ -62,6 +62,14 @@ SWITCH_ROBOT_ID = os.environ["TUYA_SWITCH_ROBOT_ID"]  # bridged via a Bluetooth 
 # sensor_id -> {"online": bool, "value": ...}, populated by poll_devices()/listen_pir()
 live_readings = {}
 
+# Mirrors exactly what the cloud companion's own ac_status_cache builds up
+# incrementally from mirrored commands/ac messages ("power"/"temp"/"mode"/
+# "wind" keys, "1"/"0" strings for power) — kept here too so the FULL
+# current picture can be republished retained (see send_ac_command below)
+# instead of only ever mirroring one aspect at a time, which a freshly
+# (re)connected subscriber could never reconstruct on its own.
+_ac_status_shadow = {}
+
 # sensor IDs handled by a dedicated listen_pir() thread instead of poll_devices()
 pir_listener_sensor_ids = set()
 
@@ -155,6 +163,17 @@ def send_ac_command(code, value):
     automation_engine.set_known_ac_state(code, value)
     _notify_device_update("aircon", True, None)
 
+    if real_code == "power":
+        _ac_status_shadow["power"] = "1" if real_value else "0"
+    elif real_code in ("temp", "mode", "wind"):
+        _ac_status_shadow[real_code] = real_value
+    # Retained, and the FULL known picture every time (not just the one
+    # aspect that just changed) — a subscriber that (re)connects gets this
+    # immediately and can use it as-is, rather than only ever seeing
+    # whichever single aspect happened to be retained last and having no
+    # way to reconstruct the rest.
+    mqtt_client.publish("state/ac_status", _ac_status_shadow, retain=True)
+
     return result
 
 
@@ -179,7 +198,12 @@ def set_switch_state(value):
     result = cloud.sendcommand(SWITCH_ROBOT_ID, {
         'commands': [{'code': 'switch_1', 'value': bool(value)}]
     })
-    mqtt_client.publish("commands/switch", {"value": bool(value)})
+    # Retained — a cloud companion that (re)connects gets this immediately
+    # instead of showing "offline" until the next actual toggle happens.
+    # Safe to retain here (unlike the shared state/sensor_update topic):
+    # this is its own dedicated topic and the switch's entire state is one
+    # value, so "the last message on this topic" IS the full current state.
+    mqtt_client.publish("commands/switch", {"value": bool(value)}, retain=True)
     _notify_device_update("switch", True, bool(value))
     return result
 
@@ -280,9 +304,20 @@ def send_heartbeat():
     so a cloud companion that (re)connects sees it immediately. Sensor
     readings only publish on change, so this is the only way to tell "the
     Pi is running but nothing happened" apart from "the Pi is offline" —
-    the cloud side just checks how long ago the last one arrived."""
+    the cloud side just checks how long ago the last one arrived.
+
+    Also republishes the FULL current live_readings snapshot, retained, on
+    its own topic — sensor_update itself is one shared topic across every
+    sensor, so retaining IT would only ever preserve whichever single
+    sensor happened to change last, not each sensor's own last-known state.
+    Without this, a cloud companion that (re)connects has no way to learn
+    any sensor's current state until it happens to change again — a room
+    sitting quiet for a while would show its PIR as "offline" indefinitely
+    even though it's genuinely online, simply because nothing new has
+    changed since the reconnect."""
     while True:
         mqtt_client.publish("state/heartbeat", {"timestamp": time.time()}, retain=True)
+        mqtt_client.publish("state/sensor_snapshot", live_readings, retain=True)
         time.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 

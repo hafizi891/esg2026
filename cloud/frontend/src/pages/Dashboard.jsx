@@ -161,6 +161,15 @@ export default function Dashboard() {
     // what catches the real update once it lands (from your own click, or
     // anyone else's, or an automation).
     source.addEventListener('device_status_update', () => refreshDeviceStatus())
+    // The Pi republishes every sensor's current reading (retained) every
+    // ~20s — this is what corrects a sensor wrongly showing offline/stale
+    // right after this dashboard's own MQTT subscriber (re)connects, since
+    // sensor_update alone (on-change only) can't tell it anything about a
+    // sensor that hasn't happened to change since then.
+    source.addEventListener('sensor_snapshot', () => {
+      loadDashboard(activeFloorId)
+      refreshAllFloorDashboards()
+    })
     source.onerror = () => {}
     return () => source.close()
   }, [activeFloorId, loadDashboard, refreshDeviceStatus, refreshAllFloorDashboards, allSensors, allRooms, floors])

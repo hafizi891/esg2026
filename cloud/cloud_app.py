@@ -144,7 +144,7 @@ def notify_clients(event_type, data):
 
 
 def _handle_state_message(event_type, payload):
-    global automations
+    global automations, live_sensors, ac_status_cache
     if event_type == "heartbeat":
         pass  # nothing to do — just arriving at all is what keeps mqtt_status["last_message_at"] fresh
     elif event_type == "automations":
@@ -153,6 +153,24 @@ def _handle_state_message(event_type, payload):
     elif event_type == "sensor_update":
         live_sensors[payload.get("id")] = payload
         notify_clients("sensor_update", payload)
+    elif event_type == "sensor_snapshot":
+        # Retained, republished every ~20s by the Pi's heartbeat thread with
+        # EVERY sensor's current reading — full replace. Without this, a
+        # (re)connecting subscriber only ever learns a sensor's state from
+        # sensor_update (on-change only), so anything that hasn't happened
+        # to change since reconnecting would wrongly still show as
+        # offline/unknown even though it's genuinely fine.
+        live_sensors = payload
+        notify_clients("sensor_snapshot", payload)
+    elif event_type == "ac_status":
+        # Retained, full replace — the Pi's own send_ac_command() mirrors
+        # its complete known AC state here every time (not just the one
+        # aspect that changed), so this alone is enough to reconstruct
+        # ac_status_cache correctly on (re)connect. _handle_command_message
+        # below still updates it incrementally too on every command for
+        # lower latency; both converge to the same picture.
+        ac_status_cache = payload
+        notify_clients("device_status_update", {"device": "ac"})
     elif event_type == "automation_triggered":
         automation_log.append(
             {
