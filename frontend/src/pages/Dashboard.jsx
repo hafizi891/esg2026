@@ -67,6 +67,14 @@ export default function Dashboard() {
     source.addEventListener('sensor_update', (e) => {
       const data = JSON.parse(e.data)
       loadDashboard()
+      // A manually-sent AC/switch command (from this dashboard, the cloud
+      // companion, or an automation) reports its result via sensor_update,
+      // not automation_triggered — that event is ONLY for actual automation
+      // firings. Without this, a cloud-triggered command would update the
+      // Pi's own live_readings and correctly notify this browser, but the
+      // AC button/temperature display (driven by acStatus/switchStatus, a
+      // separate fetch) would never actually refresh from it.
+      refreshDeviceStatus()
       if (data.value === 'pir') setLastMotionAt(Date.now() / 1000)
     })
     source.addEventListener('automation_triggered', () => refreshDeviceStatus())
