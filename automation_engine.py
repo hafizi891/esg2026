@@ -111,7 +111,9 @@ def _is_active(sensor_type, value):
     return False
 
 
-def _label_for_command(code, value):
+def label_for_command(code, value):
+    """Public — also used by app.py to label manual (non-automation) AC
+    commands the same way for the Logs page."""
     if code == "PowerOn":
         return "power_on"
     if code == "PowerOff":
@@ -132,7 +134,7 @@ def _event_type_for(action_type, commands):
     (see the unchanged-setting filter in _fire()) — not the rule's full
     configured bundle, which would be misleading if part of it was skipped."""
     if action_type == "ac_command":
-        labels = [_label_for_command(c.get("code"), c.get("value")) for c in commands]
+        labels = [label_for_command(c.get("code"), c.get("value")) for c in commands]
         return "+".join(labels) if labels else "ac_command"
     return action_type
 

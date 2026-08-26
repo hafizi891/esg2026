@@ -192,11 +192,27 @@ def dispatch_remote_command(payload):
     app's own dashboard or an automation."""
     cmd_type = payload.get("type")
     if cmd_type == "ac_command":
-        send_ac_command(payload.get("code"), payload.get("value"))
+        code, value = payload.get("code"), payload.get("value")
+        try:
+            send_ac_command(code, value)
+            log_manual_command("aircon", automation_engine.label_for_command(code, value), True)
+        except Exception as e:
+            log_manual_command("aircon", automation_engine.label_for_command(code, value), False)
+            print(f"Remote ac_command failed: {e}")
     elif cmd_type == "toggle_switch":
-        set_switch_state(bool(payload.get("value")))
+        try:
+            set_switch_state(bool(payload.get("value")))
+            log_manual_command("switch", "toggle_switch", True)
+        except Exception as e:
+            log_manual_command("switch", "toggle_switch", False)
+            print(f"Remote toggle_switch failed: {e}")
     elif cmd_type == "send_ir":
-        send_ir_command(payload.get("code"))
+        try:
+            send_ir_command(payload.get("code"))
+            log_manual_command("ir", "send_ir", True)
+        except Exception as e:
+            log_manual_command("ir", "send_ir", False)
+            print(f"Remote send_ir failed: {e}")
     elif cmd_type == "resync_ac_state":
         resync_ac_state(payload.get("data") or {})
     elif cmd_type == "create_automation":
@@ -239,8 +255,21 @@ def notify_clients(event_type, data):
     # this same broker) show live state without ever calling Tuya directly.
     # "scan_progress" is excluded — that's purely local Wi-Fi-scan UI
     # feedback, meaningless off this network.
-    if event_type in ("sensor_update", "automation_triggered"):
+    if event_type in ("sensor_update", "automation_triggered", "manual_command"):
         mqtt_client.publish(f"state/{event_type}", data)
+
+
+def log_manual_command(device, event_type, success):
+    """Records a directly user-triggered command (a dashboard click — from
+    this app's own frontend or the cloud companion, NOT an automation
+    firing) into the same Logs page automations use, and mirrors it to MQTT
+    so the cloud companion's own Logs page can show it too, regardless of
+    which dashboard the click actually came from."""
+    analytics_store.log_manual_command(device, event_type, success)
+    notify_clients(
+        "manual_command",
+        {"device": device, "event_type": event_type, "success": success, "timestamp": time.time()},
+    )
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
@@ -756,8 +785,10 @@ def send_ir():
     try:
         result = send_ir_command(base64_code)
         print(f"IR command result: {result}")
+        log_manual_command("ir", "send_ir", True)
         return jsonify({"success": True, "result": result})
     except Exception as e:
+        log_manual_command("ir", "send_ir", False)
         return jsonify({"error": str(e)}), 500
 
 
@@ -771,8 +802,10 @@ def send_ac_command_route():
     try:
         result = send_ac_command(code, value)
         print(f"AC command result: {result}")
+        log_manual_command("aircon", automation_engine.label_for_command(code, value), True)
         return jsonify({"success": True, "result": result})
     except Exception as e:
+        log_manual_command("aircon", automation_engine.label_for_command(code, value), False)
         return jsonify({"error": str(e)}), 500
 
 
@@ -825,8 +858,10 @@ def api_toggle_switch():
 
     try:
         result = set_switch_state(bool(value))
+        log_manual_command("switch", "toggle_switch", True)
         return jsonify({"success": True, "result": result})
     except Exception as e:
+        log_manual_command("switch", "toggle_switch", False)
         return jsonify({"error": str(e)}), 500
 
 

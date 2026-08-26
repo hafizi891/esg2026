@@ -85,10 +85,14 @@ export default function Logs() {
     return () => clearInterval(interval)
   }, [])
 
-  const automationName = (id) => automations.find((a) => a.id === id)?.name || id
+  // Manual (dashboard-click) rows have source: 'manual' and no real
+  // automation_id — automation_id is just the reserved sentinel "manual" to
+  // satisfy the DB's NOT NULL constraint (see analytics_store.log_manual_command).
+  const automationName = (row) => (row.source === 'manual' ? 'Manual control' : automations.find((a) => a.id === row.automation_id)?.name || row.automation_id)
 
-  const deviceNameFor = (automationId) => {
-    const actionType = automations.find((a) => a.id === automationId)?.action_type
+  const deviceNameFor = (row) => {
+    if (row.source === 'manual') return sensors.find((s) => s.type === row.device)?.name
+    const actionType = automations.find((a) => a.id === row.automation_id)?.action_type
     const sensorType = ACTION_TYPE_TO_SENSOR_TYPE[actionType]
     return sensors.find((s) => s.type === sensorType)?.name
   }
@@ -102,14 +106,14 @@ export default function Logs() {
     {
       key: 'automation_id',
       label: 'Automation',
-      render: (row) => automationName(row.automation_id),
+      render: (row) => automationName(row),
     },
     {
       key: 'event_type',
       label: 'What happened',
       render: (row) => {
         const parts = formatEventParts(row.event_type)
-        const device = deviceNameFor(row.automation_id)
+        const device = deviceNameFor(row)
         const lastIndex = parts.length - 1
         return (
           <span>

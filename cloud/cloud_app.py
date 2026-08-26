@@ -165,10 +165,30 @@ def _handle_state_message(event_type, payload):
                 "success": payload.get("success"),
                 "error": payload.get("error"),
                 "timestamp": payload.get("timestamp", time.time()),
+                "source": "automation",
+                "device": None,
             }
         )
         del automation_log[:-MAX_LOG]  # keep only the most recent MAX_LOG entries
         notify_clients("automation_triggered", payload)
+    elif event_type == "manual_command":
+        # A dashboard click (from either app, not an automation) — mirrored
+        # here so it shows up in this app's own Logs page too, in the exact
+        # same shape the Pi's local Logs page renders (see
+        # analytics_store.log_manual_command / app.py's log_manual_command).
+        automation_log.append(
+            {
+                "automation_id": "manual",
+                "event_type": payload.get("event_type", "action"),
+                "success": payload.get("success"),
+                "error": None,
+                "timestamp": payload.get("timestamp", time.time()),
+                "source": "manual",
+                "device": payload.get("device"),
+            }
+        )
+        del automation_log[:-MAX_LOG]
+        notify_clients("manual_command", payload)
 
 
 # Mirrors app.py's AC_CODE_MAP — commands/ac is published there with the
