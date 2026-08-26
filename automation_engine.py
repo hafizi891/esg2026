@@ -445,9 +445,9 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
                 last_guard = last_guard_active_at.get(automation["id"])
                 if last_guard is not None and now - last_guard < minutes * 60:
                     print(
-                        f"Automation '{automation.get('name', automation['id'])}': no-motion timeout reached but "
-                        f"guard sensor {guard_sensor_id!r} was active {now - last_guard:.0f}s ago "
-                        f"(needs {minutes * 60:.0f}s of quiet) — countdown reset, holding off"
+                        f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
+                        f"no-motion timeout reached but guard sensor {guard_sensor_id!r} was active "
+                        f"{now - last_guard:.0f}s ago (needs {minutes * 60:.0f}s of quiet) — countdown reset, holding off"
                     )
                     continue
             if not _guard_passes(automation):
@@ -456,11 +456,19 @@ def check_timeouts(automations, send_ir_command, set_switch, send_ac_command, no
                 # a talking burst landing between on_sensor_reading() setting
                 # last_guard_active_at and this check running.
                 print(
-                    f"Automation '{automation.get('name', automation['id'])}': no-motion timeout reached but guard "
-                    f"sensor {guard_sensor_id!r} is currently active (needs {automation.get('guard_state', 'inactive')}) "
-                    f"— holding off"
+                    f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
+                    f"no-motion timeout reached but guard sensor {guard_sensor_id!r} is currently active "
+                    f"(needs {automation.get('guard_state', 'inactive')}) — holding off"
                 )
                 continue
+            if guard_wants_inactive:
+                last_guard = last_guard_active_at.get(automation["id"])
+                since = f"{now - last_guard:.0f}s ago" if last_guard is not None else "never this session"
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] Automation '{automation.get('name', automation['id'])}': "
+                    f"no-motion timeout reached and guard sensor {guard_sensor_id!r} last active {since} "
+                    f"(needed {minutes * 60:.0f}s of quiet) — firing"
+                )
             # Set BEFORE firing, not after: _fire() may block for a while on a
             # delayed command, and _trigger_still_valid() reads this same flag
             # during that wait to detect whether motion resumed in the

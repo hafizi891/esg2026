@@ -226,7 +226,8 @@ def listen_mic(sensor_id, on_state_change):
                         # and is easy to just not be watching at the right
                         # moment.
                         state = "STARTED talking" if talking else "STOPPED talking"
-                        print(f"Mic listener: {state} (dbfs={dbfs:.1f}, threshold={detector.min_dbfs:.1f})")
+                        ts = time.strftime("%H:%M:%S")
+                        print(f"[{ts}] Mic listener: {state} (dbfs={dbfs:.1f}, threshold={detector.min_dbfs:.1f})")
                         on_state_change(talking)
         except Exception as e:
             print(f"Mic listener error: {e} — retrying in 5s")
