@@ -185,6 +185,18 @@ def _handle_command_message(device, payload):
             ac_status_cache[code] = value
     elif device == "switch":
         switch_status_cache = {"online": True, "value": bool(payload.get("value"))}
+    else:
+        return
+    # Every AC/switch command is fire-and-forget over MQTT — the REST route
+    # that sent it (api_send_ac_command/api_toggle_switch/...) returns as
+    # soon as the publish succeeds, well before the Pi has actually
+    # executed it and mirrored the result back here. Without this, a
+    # dashboard's own "refresh device status right after my click" call
+    # reads the stale pre-update cache every time, and the real state only
+    # ever shows up after a full page reload made later, by chance, after
+    # this message had time to arrive. Broadcasting here lets the frontend
+    # refetch exactly when the mirrored state actually changes instead.
+    notify_clients("device_status_update", {"device": device})
 
 
 def start_mqtt_subscriber():

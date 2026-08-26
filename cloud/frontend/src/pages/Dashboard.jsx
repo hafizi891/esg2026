@@ -154,6 +154,13 @@ export default function Dashboard() {
       refreshDeviceStatus()
       refreshAllFloorDashboards()
     })
+    // Fired when the Pi's real AC/switch command result actually arrives
+    // back over MQTT — a manual click already calls refreshDeviceStatus()
+    // right after sending the command, but that happens before the Pi has
+    // executed anything, so it just re-reads stale cached status. This is
+    // what catches the real update once it lands (from your own click, or
+    // anyone else's, or an automation).
+    source.addEventListener('device_status_update', () => refreshDeviceStatus())
     source.onerror = () => {}
     return () => source.close()
   }, [activeFloorId, loadDashboard, refreshDeviceStatus, refreshAllFloorDashboards, allSensors, allRooms, floors])
