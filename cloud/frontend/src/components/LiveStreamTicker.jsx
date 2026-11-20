@@ -1,7 +1,7 @@
 export default function LiveStreamTicker({ events }) {
   return (
     <div className="mt-10">
-      <p className="text-xs font-bold tracking-widest text-text-secondary uppercase mb-3">Live stream · whole facility</p>
+      <p className="text-xs font-bold tracking-widest text-text-secondary uppercase mb-3">Live stream · all rooms</p>
       {events.length === 0 ? (
         <p className="text-sm text-text-secondary">No activity yet.</p>
       ) : (

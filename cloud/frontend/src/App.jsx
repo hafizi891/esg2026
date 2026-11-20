@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Route, Routes } from 'react-router-dom'
-import { LayoutDashboard, Settings as SettingsIcon, LineChart, Zap, Radar, ScrollText, LogOut, Wifi, Cpu } from 'lucide-react'
+import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
+import { LayoutDashboard, LineChart, Radar, ScrollText, LogOut, Wifi } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
-import Automations from './pages/Automations'
+import Analytics from './pages/Analytics'
 import Logs from './pages/Logs'
 import Mqtt from './pages/Mqtt'
-import Pi from './pages/Pi'
 import LoginScreen from './components/LoginScreen'
-import CloudUnavailableNotice from './components/CloudUnavailableNotice'
+
 import { useToast } from './context/ToastContext.jsx'
 import { getAutomations, getSensors, getRooms, getSession, logout } from './api/client'
 
-const APP_NAME = 'Smart Motion Sensor'
+const APP_NAME = 'ESG Intelligence'
 
 function Sidebar({ onLogout }) {
   const linkClass = ({ isActive }) =>
@@ -27,33 +26,25 @@ function Sidebar({ onLogout }) {
         </div>
         <div className="min-w-0">
           <span className="block text-text-primary font-bold text-base leading-tight">{APP_NAME}</span>
-          <span className="block text-[10px] font-medium tracking-widest text-text-secondary uppercase">
-            Facility · Cloud
-          </span>
+
         </div>
       </div>
       <nav className="flex flex-col gap-1 px-3">
         <NavLink to="/" end className={linkClass}>
-          <LayoutDashboard size={18} /> Dashboard
+          <LineChart size={18} /> ESG Overview
         </NavLink>
-        <NavLink to="/analytics" className={linkClass}>
-          <LineChart size={18} /> Analytics
+        <NavLink to="/monitoring" className={linkClass}>
+          <LayoutDashboard size={18} /> Live Monitoring
         </NavLink>
-        <NavLink to="/automations" className={linkClass}>
-          <Zap size={18} /> Automations
-        </NavLink>
+
         <NavLink to="/logs" className={linkClass}>
           <ScrollText size={18} /> Logs
         </NavLink>
         <NavLink to="/mqtt" className={linkClass}>
           <Wifi size={18} /> MQTT
         </NavLink>
-        <NavLink to="/pi" className={linkClass}>
-          <Cpu size={18} /> Pi
-        </NavLink>
-        <NavLink to="/settings" className={linkClass}>
-          <SettingsIcon size={18} /> Settings
-        </NavLink>
+
+
       </nav>
       <button
         onClick={onLogout}
@@ -138,13 +129,13 @@ function AuthenticatedApp({ onLogout }) {
       <Sidebar onLogout={onLogout} />
       <main className="flex-1 min-w-0">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/analytics" element={<CloudUnavailableNotice page="Analytics" />} />
-          <Route path="/automations" element={<Automations />} />
+          <Route path="/" element={<Analytics />} />
+          <Route path="/analytics" element={<Navigate to="/" replace />} />
+          <Route path="/monitoring" element={<Dashboard />} />
+
           <Route path="/logs" element={<Logs />} />
           <Route path="/mqtt" element={<Mqtt />} />
-          <Route path="/pi" element={<Pi />} />
-          <Route path="/settings" element={<CloudUnavailableNotice page="Settings" />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>

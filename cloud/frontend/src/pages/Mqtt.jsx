@@ -111,7 +111,7 @@ export default function Mqtt() {
       <form onSubmit={handleSave} className="rounded-xl border border-border bg-surface-2 p-5 space-y-4">
         <p className="text-xs font-bold tracking-widest text-text-secondary uppercase">Broker settings</p>
         <p className="text-sm text-text-secondary -mt-2">
-          Saving overwrites <code>cloud/.env</code> and reconnects immediately — no restart needed.
+          Saving updates the broker settings and reconnects immediately — no restart needed.
         </p>
 
         <div className="grid grid-cols-2 gap-4">
@@ -151,13 +151,24 @@ export default function Mqtt() {
             />
           </label>
           <label className="block col-span-2">
-            <span className="block text-sm font-medium text-text-primary mb-1.5">Topic prefix</span>
+            <span className="block text-sm font-medium text-text-primary mb-1.5">ESP topic base</span>
             <input
               className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-sm focus:outline-none focus:ring-2 focus:ring-accent"
               value={form.topic_prefix}
               onChange={(e) => setForm({ ...form, topic_prefix: e.target.value })}
             />
           </label>
+        </div>
+
+        <div className="rounded-lg border border-border bg-bg p-4 text-sm">
+          <p className="font-semibold text-text-primary mb-2">ESP8266 topic contract</p>
+          <div className="space-y-1 font-mono text-xs text-text-secondary">
+            <p>Publish: {form.topic_prefix}/status</p>
+            <p>Publish: {form.topic_prefix}/motion</p>
+            <p>Publish: {form.topic_prefix}/sound</p>
+            <p>Publish: {form.topic_prefix}/ir</p>
+            <p>Subscribe: {form.topic_prefix}/command</p>
+          </div>
         </div>
 
         {message && (

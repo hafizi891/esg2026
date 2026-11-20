@@ -30,7 +30,7 @@ export default function LoginScreen({ onSuccess }) {
           </div>
           <div>
             <h1 className="font-bold text-lg leading-tight">Smart Motion Sensor</h1>
-            <p className="text-xs text-text-secondary">Cloud dashboard</p>
+            <p className="text-xs text-text-secondary">ESP8266 dashboard</p>
           </div>
         </div>
 

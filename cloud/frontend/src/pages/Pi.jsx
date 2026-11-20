@@ -58,7 +58,7 @@ export default function Pi() {
             <p className="text-sm text-text-secondary">
               {status.last_seen_at
                 ? `Last heard from ${relativeTime(status.last_seen_at)}`
-                : "Haven't heard from it yet since this cloud app started."}
+                : "Haven't heard from it yet since this dashboard started."}
             </p>
             {!online && status.last_seen_at && (
               <p className="text-sm text-warning mt-2">

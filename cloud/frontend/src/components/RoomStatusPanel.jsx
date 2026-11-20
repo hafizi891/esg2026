@@ -1,21 +1,17 @@
-import { Minus, Plus } from 'lucide-react'
 import { roomHeadline, roomDescription, roomState } from '../lib/roomStatus'
-
-const MODES = [
-  { value: 0, label: 'Cool' },
-  { value: 1, label: 'Heat' },
-  { value: 2, label: 'Auto' },
-  { value: 3, label: 'Fan' },
-  { value: 4, label: 'Dry' },
-]
 
 function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
   if (sensor.type === 'pir') return sensor.online ? (sensor.value === 'pir' ? 'Motion' : 'No motion') : 'Offline'
   if (sensor.type === 'aircon') {
-    if (!acStatus) return sensor.online ? 'Online' : 'Offline'
+    if (!acStatus?.online) return 'No state yet'
     return acStatus.power === '1' ? `On · ${acStatus.temp}°C` : 'Off'
   }
   if (sensor.type === 'ir') return sensor.online ? 'Online' : 'Offline'
+  if (sensor.type === 'mic') {
+    if (!sensor.online) return 'Offline'
+    return sensor.value == null ? 'Waiting for sound' : `Last detected · ${sensor.value} peak-to-peak`
+  }
+  if (sensor.id === 'sensor-device') return sensor.value === 'online' ? 'Online' : 'Offline'
   if (sensor.type === 'switch') {
     if (!switchStatus) return sensor.online ? 'Online' : 'Offline'
     return switchStatus.online ? (switchStatus.value ? 'On' : 'Off') : 'Offline'
@@ -37,10 +33,6 @@ export default function RoomStatusPanel({
   acStatus,
   switchStatus,
   lastMotionSeconds,
-  sending,
-  onSendAcCommand,
-  onToggleSwitch,
-  onOpenIr,
   recentEvents,
 }) {
   if (!room) {
@@ -55,13 +47,7 @@ export default function RoomStatusPanel({
   const hasSwitch = room.sensors.find((s) => s.type === 'switch')
   const state = roomState(room, acStatus)
   const isOn = acStatus?.power === '1'
-  const temp = acStatus?.temp != null ? Number(acStatus.temp) : 22
-  const currentMode = acStatus?.mode != null ? Number(acStatus.mode) : null
-
-  const adjustTemp = (delta) => {
-    const next = Math.min(30, Math.max(16, temp + delta))
-    onSendAcCommand('T', next)
-  }
+  const temp = acStatus?.temp != null ? Number(acStatus.temp) : null
 
   return (
     <aside className="w-80 shrink-0 flex flex-col gap-4">
@@ -82,73 +68,28 @@ export default function RoomStatusPanel({
 
       {hasAc && (
         <div className="rounded-xl bg-surface-2 border border-border p-5">
-          <div className="flex items-center justify-center gap-6 mb-5">
-            <button
-              disabled={sending}
-              onClick={() => adjustTemp(-1)}
-              className="w-9 h-9 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center disabled:opacity-50"
-            >
-              <Minus size={15} />
-            </button>
-            <span className="text-4xl font-bold w-24 text-center">
-              {temp}
-              <span className="text-lg align-top">°C</span>
+          <div className="text-center mb-5">
+            <p className="text-xs font-bold tracking-widest text-text-secondary uppercase mb-2">Air conditioner</p>
+            <span className="text-4xl font-bold">
+              {isOn && temp != null ? `${temp}°C` : 'Off'}
             </span>
-            <button
-              disabled={sending}
-              onClick={() => adjustTemp(1)}
-              className="w-9 h-9 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center disabled:opacity-50"
-            >
-              <Plus size={15} />
-            </button>
           </div>
-
-          <div className="grid grid-cols-5 gap-1.5 mb-4">
-            {MODES.map((m) => (
-              <button
-                key={m.value}
-                disabled={sending}
-                onClick={() => onSendAcCommand('M', m.value)}
-                className={`py-2 rounded-lg border text-xs font-medium disabled:opacity-50 ${
-                  currentMode === m.value
-                    ? 'border-accent text-accent bg-accent/10'
-                    : 'bg-white/3 border-white/10 hover:border-accent hover:text-accent'
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-
-          <button
-            disabled={sending}
-            onClick={() => onSendAcCommand(isOn ? 'PowerOff' : 'PowerOn', isOn ? 'PowerOff' : 'PowerOn')}
-            className={`w-full py-3 rounded-lg font-semibold disabled:opacity-50 ${
-              isOn ? 'bg-warning/20 text-warning hover:bg-warning/30' : 'bg-accent hover:bg-accent-hover text-white'
-            }`}
-          >
-            {isOn ? 'Turn off' : 'Turn on'}
-          </button>
+          <p className="text-xs text-text-secondary text-center">Live status reported by the ESP8266.</p>
         </div>
       )}
 
       <div className="rounded-xl border border-border bg-surface divide-y divide-border">
         <p className="px-4 pt-3 pb-1 text-[10px] font-bold tracking-widest text-text-secondary uppercase">Devices</p>
         {room.sensors.map((sensor) => (
-          <button
+          <div
             key={sensor.id}
-            onClick={() => {
-              if (sensor.type === 'ir') onOpenIr()
-              else if (sensor.type === 'switch') onToggleSwitch(!(switchStatus?.value))
-            }}
-            disabled={sensor.type !== 'ir' && sensor.type !== 'switch'}
-            className="w-full flex items-center justify-between px-4 py-3 text-sm text-left disabled:cursor-default"
+            className="w-full flex items-center justify-between px-4 py-3 text-sm"
           >
             <span className="text-text-primary font-medium">{sensor.name}</span>
             <span className={statusColor(sensor, { acStatus, switchStatus })}>
               {deviceStatusLabel(sensor, { acStatus, switchStatus })}
             </span>
-          </button>
+          </div>
         ))}
         {room.sensors.length === 0 && <p className="px-4 py-3 text-sm text-text-secondary">No devices in this room.</p>}
       </div>
@@ -167,14 +108,6 @@ export default function RoomStatusPanel({
         </div>
       )}
 
-      {hasSwitch && !hasAc && (
-        <button
-          onClick={() => onToggleSwitch(!(switchStatus?.value))}
-          className="w-full py-3 rounded-lg font-semibold bg-accent hover:bg-accent-hover text-white"
-        >
-          {switchStatus?.value ? 'Turn off switch' : 'Turn on switch'}
-        </button>
-      )}
     </aside>
   )
 }

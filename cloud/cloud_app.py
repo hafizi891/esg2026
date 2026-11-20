@@ -37,6 +37,8 @@ from pathlib import Path
 from dotenv import load_dotenv, set_key
 from flask import Flask, jsonify, request, Response, send_from_directory, session
 from flask_cors import CORS
+from esp_mqtt import apply_esp_message, command_topic, normalize_command, subscription_topic
+from esg_analytics import AnalyticsStore
 
 ENV_PATH = Path(__file__).parent / ".env"
 load_dotenv(ENV_PATH)
@@ -51,6 +53,8 @@ MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "smart-motion-sensor")
 CLOUD_DASHBOARD_PASSWORD = os.environ["CLOUD_DASHBOARD_PASSWORD"]
 
 FACILITY_LAYOUT = json.loads((Path(__file__).parent / "facility_layout.json").read_text(encoding="utf-8"))
+ESG_ANALYTICS_PATH = Path(os.environ.get("ESG_ANALYTICS_PATH", Path(__file__).parent / "esg_analytics.db"))
+esg_analytics = AnalyticsStore(ESG_ANALYTICS_PATH)
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -249,18 +253,29 @@ def start_mqtt_subscriber():
             import paho.mqtt.client as mqtt
 
             def on_message(client, userdata, msg):
-                mqtt_status["last_message_at"] = time.time()
-                parts = msg.topic.split("/")
-                if len(parts) < 2:
-                    return
-                try:
-                    payload = json.loads(msg.payload.decode("utf-8"))
-                except (ValueError, UnicodeDecodeError):
-                    return
-                if parts[-2] == "state":
-                    _handle_state_message(parts[-1], payload)
-                elif parts[-2] == "commands":
-                    _handle_command_message(parts[-1], payload)
+                now = time.time()
+                mqtt_status["last_message_at"] = now
+                events = apply_esp_message(live_sensors, msg.topic, msg.payload, now, MQTT_TOPIC_PREFIX)
+                for event_type, payload in events:
+                    notify_clients(event_type, payload)
+                if msg.topic.endswith("/sound"):
+                    reading = next((item for _, item in events if item.get("id") == "sensor-mic"), None)
+                    if reading:
+                        esg_analytics.record("sound", now, level=reading["value"])
+                elif msg.topic.endswith("/motion"):
+                    reading = next((item for _, item in events if item.get("id") == "sensor-pir"), None)
+                    if reading:
+                        esg_analytics.record("motion", now, active=reading["motion"])
+                elif msg.topic.endswith("/ir"):
+                    reading = next((item for _, item in events if item.get("id") == "sensor-ac"), None)
+                    if reading:
+                        esg_analytics.record(
+                            "ac", now,
+                            power=reading.get("power") == "1",
+                            temperature=reading.get("temp"),
+                            fan=reading.get("fan"),
+                            source=reading.get("source"),
+                        )
 
             def on_disconnect(client, userdata, *args):
                 mqtt_status["connected"] = False
@@ -272,8 +287,9 @@ def start_mqtt_subscriber():
             client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=30)
             _subscriber_client = client
             mqtt_status.update({"connected": True, "last_error": None, "connected_at": time.time()})
-            client.subscribe([(f"{MQTT_TOPIC_PREFIX}/state/#", 0), (f"{MQTT_TOPIC_PREFIX}/commands/#", 0)])
-            print(f"Cloud app: subscribed to {MQTT_TOPIC_PREFIX}/state/# and /commands/#")
+            topic = subscription_topic(MQTT_TOPIC_PREFIX)
+            client.subscribe(topic, qos=1)
+            print(f"Cloud app: subscribed to {topic}")
             client.loop_forever()  # blocks; returns on a clean disconnect() or unrecoverable error
         except Exception as e:
             mqtt_status.update({"connected": False, "last_error": str(e)})
@@ -284,19 +300,23 @@ def start_mqtt_subscriber():
             mqtt_status["connected"] = False
 
 
-def publish_command(payload):
-    """Publishes a command for the Pi's remote listener to execute against
-    real hardware. Short-lived connection — commands are infrequent
-    (user-triggered from this dashboard)."""
+def publish_esp_command(payload="trigger_ir"):
+    """Send the ESP8266's plain-text command payload."""
     import paho.mqtt.client as mqtt
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=10)
     client.loop_start()
-    client.publish(f"{MQTT_TOPIC_PREFIX}/remote/command", json.dumps(payload)).wait_for_publish(timeout=5)
+    payload = normalize_command(payload)
+    client.publish(command_topic(MQTT_TOPIC_PREFIX), payload, qos=1).wait_for_publish(timeout=5)
     client.loop_stop()
     client.disconnect()
+
+
+def publish_command(payload):
+    """Reject legacy Pi commands after switching this dashboard to ESP topics."""
+    raise RuntimeError("This dashboard now uses the ESP8266 topic contract; legacy Pi commands are disabled")
 
 
 # ==========================================
@@ -407,14 +427,21 @@ def api_automation_events():
     return jsonify(list(reversed(rows[-limit:])))  # most recent first
 
 
+@app.route("/api/esg_analytics")
+@require_auth
+def api_esg_analytics():
+    days = request.args.get("days", 7, type=int)
+    if days < 1 or days > 90:
+        return jsonify({"error": "days must be between 1 and 90"}), 400
+    end = time.time()
+    return jsonify(esg_analytics.summary(end - days * 86400, end))
+
+
 @app.route("/api/send_ir", methods=["POST"])
 @require_auth
 def api_send_ir():
-    code = (request.json or {}).get("code")
-    if not code:
-        return jsonify({"error": "No IR code provided"}), 400
     try:
-        publish_command({"type": "send_ir", "code": code})
+        publish_esp_command("trigger_ir")
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -424,12 +451,14 @@ def api_send_ir():
 @require_auth
 def api_send_ac_command():
     data = request.json or {}
-    code, value = data.get("code"), data.get("value")
-    if not code or value is None:
-        return jsonify({"error": "code and value are required"}), 400
+    command = data.get("command")
+    if not command:
+        return jsonify({"error": "command is required"}), 400
     try:
-        publish_command({"type": "ac_command", "code": code, "value": value})
+        publish_esp_command(command)
         return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -463,7 +492,7 @@ def api_resync_ac_state():
 @app.route("/api/ac_status")
 @require_auth
 def api_ac_status():
-    return jsonify(ac_status_cache or {"power": "0"})
+    return jsonify(live_sensors.get("sensor-ac") or {"online": False, "power": "0", "temp": None})
 
 
 @app.route("/api/switch_status")
@@ -595,6 +624,20 @@ def serve_frontend(path):
     )
 
 
+# Gunicorn imports this module and never executes __main__, so the MQTT
+# subscriber must be started at import time for production.
+_mqtt_subscriber_started = False
+
+
+def _ensure_mqtt_subscriber():
+    global _mqtt_subscriber_started
+    if not _mqtt_subscriber_started:
+        _mqtt_subscriber_started = True
+        threading.Thread(target=start_mqtt_subscriber, daemon=True).start()
+
+
+_ensure_mqtt_subscriber()
+
+
 if __name__ == "__main__":
-    threading.Thread(target=start_mqtt_subscriber, daemon=True).start()
     app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

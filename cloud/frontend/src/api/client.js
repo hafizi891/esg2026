@@ -24,7 +24,7 @@ export const getSensors = () => request('/sensors')
 export const getRooms = () => request('/rooms')
 
 export const sendIr = (code) => request('/send_ir', { method: 'POST', body: JSON.stringify({ code }) })
-export const sendAcCommand = (code, value) => request('/send_ac_command', { method: 'POST', body: JSON.stringify({ code, value }) })
+export const sendAcCommand = (command) => request('/send_ac_command', { method: 'POST', body: JSON.stringify({ command }) })
 export const getAcStatus = () => request('/ac_status')
 export const resyncAcState = (state) => request('/resync_ac_state', { method: 'POST', body: JSON.stringify(state) })
 
@@ -49,3 +49,4 @@ export const getMqttConfig = () => request('/mqtt')
 export const updateMqttConfig = (config) => request('/mqtt', { method: 'PUT', body: JSON.stringify(config) })
 
 export const getPiStatus = () => request('/pi_status')
+export const getEsgAnalytics = (days = 7) => request(`/esg_analytics?days=${encodeURIComponent(days)}`)

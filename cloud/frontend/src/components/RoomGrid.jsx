@@ -10,7 +10,7 @@ function furnitureFor(roomName) {
   return null
 }
 
-function BadgeCluster({ room, onSensorClick }) {
+function BadgeCluster({ room }) {
   const items = [
     ...room.sensors.map((s) => ({ kind: 'sensor', key: s.id, data: s })),
     ...room.residents.map((r) => ({ kind: 'resident', key: r.id, data: r })),
@@ -21,16 +21,9 @@ function BadgeCluster({ room, onSensorClick }) {
     <div className="flex flex-wrap gap-1 content-end">
       {items.map((item) =>
         item.kind === 'sensor' ? (
-          <button
-            key={item.key}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSensorClick?.(item.data)
-            }}
-            className="cursor-pointer"
-          >
+          <div key={item.key}>
             <SensorIcon sensor={item.data} />
-          </button>
+          </div>
         ) : (
           <ResidentAvatar key={item.key} resident={item.data} />
         )
@@ -47,7 +40,7 @@ const STATE_CLASSES = {
   empty: 'border border-dashed border-white/10 bg-white/2',
 }
 
-function RoomBlock({ room, isSelected, onSelect, onSensorClick, acStatus }) {
+function RoomBlock({ room, isSelected, onSelect, acStatus }) {
   const state = roomState(room, acStatus)
   const Furniture = furnitureFor(room.name)
 
@@ -80,13 +73,13 @@ function RoomBlock({ room, isSelected, onSelect, onSensorClick, acStatus }) {
         {room.name}
       </span>
       <div className="relative">
-        <BadgeCluster room={room} onSensorClick={onSensorClick} />
+        <BadgeCluster room={room} />
       </div>
     </div>
   )
 }
 
-export default function RoomGrid({ rooms, selectedRoomId, onSelectRoom, onSensorClick, acStatus }) {
+export default function RoomGrid({ rooms, selectedRoomId, onSelectRoom, acStatus }) {
   return (
     <div className="relative border-2 border-border rounded-2xl bg-white/2 w-full" style={{ aspectRatio: '1113 / 633' }}>
       {rooms.length === 0 ? (
@@ -100,7 +93,6 @@ export default function RoomGrid({ rooms, selectedRoomId, onSelectRoom, onSensor
             room={room}
             isSelected={room.id === selectedRoomId}
             onSelect={onSelectRoom}
-            onSensorClick={onSensorClick}
             acStatus={acStatus}
           />
         ))

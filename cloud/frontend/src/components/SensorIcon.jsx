@@ -1,4 +1,4 @@
-import { Thermometer, Footprints, ToggleRight, Radio, Snowflake, CircleDashed } from 'lucide-react'
+import { Thermometer, Footprints, ToggleRight, Radio, Snowflake, Mic, Cpu, CircleDashed } from 'lucide-react'
 
 const ICONS = {
   temperature: Thermometer,
@@ -6,6 +6,8 @@ const ICONS = {
   switch: ToggleRight,
   ir: Radio,
   aircon: Snowflake,
+  mic: Mic,
+  other: Cpu,
 }
 
 function statusColor(sensor) {
@@ -22,6 +24,8 @@ export default function SensorIcon({ sensor }) {
       ? `${sensor.name}: ${sensor.value ?? '--'}${sensor.unit || ''}`
       : sensor.type === 'pir'
       ? `${sensor.name}: ${sensor.value === 'pir' ? 'Motion detected' : 'No motion'}`
+      : sensor.type === 'mic'
+      ? `${sensor.name}: ${sensor.online ? (sensor.value == null ? 'Waiting for sound' : `Last detected · ${sensor.value} peak-to-peak`) : 'Offline'}`
       : `${sensor.name}: ${sensor.online ? 'Online' : 'Offline'}`
 
   return (

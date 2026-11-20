@@ -85,7 +85,7 @@ export default function LevelsSidebar({
 
       {facilitySummary && (
         <div className="mt-4 p-4 rounded-xl bg-surface border border-border">
-          <p className="text-[10px] font-bold tracking-widest text-text-secondary uppercase mb-2">Facility</p>
+          <p className="text-[10px] font-bold tracking-widest text-text-secondary uppercase mb-2">Overview</p>
           <p className="text-sm text-text-primary">
             {facilitySummary.levels} level{facilitySummary.levels === 1 ? '' : 's'} · {facilitySummary.rooms} room
             {facilitySummary.rooms === 1 ? '' : 's'}

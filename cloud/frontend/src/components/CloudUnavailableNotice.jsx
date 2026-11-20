@@ -7,8 +7,8 @@ export default function CloudUnavailableNotice({ page }) {
         <MonitorOff size={32} className="text-text-secondary/60" />
         <p className="text-lg font-semibold text-text-primary">{page} isn't available here</p>
         <p className="text-sm max-w-sm">
-          This cloud dashboard only mirrors live state over MQTT — it never touches Tuya or facility.json
-          directly. Open the dashboard on the Pi's local network to manage {page.toLowerCase()}.
+          This dashboard mirrors live state over MQTT. Open the dashboard on the Pi's local network to manage{' '}
+          {page.toLowerCase()}.
         </p>
       </div>
     </div>

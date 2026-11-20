@@ -5,7 +5,7 @@ import RoomGrid from '../components/RoomGrid'
 import RoomStatusPanel from '../components/RoomStatusPanel'
 import Legend from '../components/Legend'
 import LiveStreamTicker from '../components/LiveStreamTicker'
-import IrSendModal from '../components/IrSendModal'
+
 import {
   getFloors,
   getDashboard,
@@ -15,20 +15,7 @@ import {
   getAcStatus,
   getSwitchStatus,
   getAutomationEvents,
-  sendIr,
-  sendAcCommand,
-  toggleSwitch,
 } from '../api/client'
-
-const AC_MODE_LABELS = { 0: 'Cool', 1: 'Heat', 2: 'Auto', 3: 'Fan', 4: 'Dry' }
-
-function labelForAcCommand(code, value) {
-  if (code === 'PowerOn') return 'Turned AC on'
-  if (code === 'PowerOff') return 'Turned AC off'
-  if (code === 'T') return `Set temperature to ${value}°C`
-  if (code === 'M') return `Set mode to ${AC_MODE_LABELS[value] ?? value}`
-  return 'Adjusted AC'
-}
 
 export default function Dashboard() {
   const [floors, setFloors] = useState([])
@@ -45,8 +32,7 @@ export default function Dashboard() {
   const [now, setNow] = useState(() => Date.now() / 1000)
   const [recentEvents, setRecentEvents] = useState([]) // newest first, whole-facility ticker
   const [error, setError] = useState(null)
-  const [irModalOpen, setIrModalOpen] = useState(false)
-  const [sending, setSending] = useState(false)
+
 
   useEffect(() => {
     getFloors()
@@ -114,7 +100,7 @@ export default function Dashboard() {
           return {
             timestamp: row.timestamp,
             label: automation ? `${automation.name} ${row.success ? 'fired' : 'failed'}` : 'Automation fired',
-            where: room ? `${floor?.name ?? ''} · ${room.name}`.replace(/^ · /, '') : 'Facility',
+            where: room ? `${floor?.name ?? ''} · ${room.name}`.replace(/^ · /, '') : 'All rooms',
           }
         })
         setRecentEvents(seeded)
@@ -144,7 +130,20 @@ export default function Dashboard() {
           {
             timestamp: Date.now() / 1000,
             label: 'Motion detected',
-            where: room ? `${floor?.name ?? ''} · ${room.name}`.replace(/^ · /, '') : 'Facility',
+            where: room ? `${floor?.name ?? ''} · ${room.name}`.replace(/^ · /, '') : 'All rooms',
+          },
+          ...prev,
+        ].slice(0, 20))
+      }
+      if (data.id === 'sensor-mic' && data.event === 'sound_detected') {
+        const sensor = allSensors.find((s) => s.id === data.id)
+        const room = allRooms.find((r) => r.id === sensor?.room_id)
+        const floor = floors.find((f) => f.id === room?.floor_id)
+        setRecentEvents((prev) => [
+          {
+            timestamp: data.timestamp ?? Date.now() / 1000,
+            label: `Sound detected · level ${data.value}`,
+            where: room ? `${floor?.name ?? ''} · ${room.name}`.replace(/^ · /, '') : 'All rooms',
           },
           ...prev,
         ].slice(0, 20))
@@ -214,38 +213,6 @@ export default function Dashboard() {
     [floors, allRooms, allSensors, allAutomations]
   )
 
-  const handleSensorClick = (sensor) => {
-    if (sensor.type === 'ir') setIrModalOpen(true)
-  }
-
-  const handleSendIr = async (code) => {
-    await sendIr(code)
-  }
-
-  const handleSendAcCommand = async (code, value) => {
-    setSending(true)
-    try {
-      await sendAcCommand(code, value)
-      setRecentEvents((prev) => [{ timestamp: Date.now() / 1000, label: labelForAcCommand(code, value), where: 'You' }, ...prev].slice(0, 20))
-      refreshDeviceStatus()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSending(false)
-    }
-  }
-
-  const handleToggleSwitch = async (value) => {
-    setSending(true)
-    try {
-      await toggleSwitch(value)
-      refreshDeviceStatus()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSending(false)
-    }
-  }
 
   if (error) {
     return <div className="max-w-7xl mx-auto px-8 py-10 text-danger">Error loading dashboard: {error}</div>
@@ -288,7 +255,6 @@ export default function Dashboard() {
             rooms={dashboard.rooms}
             selectedRoomId={selectedRoomId}
             onSelectRoom={setSelectedRoomId}
-            onSensorClick={handleSensorClick}
             acStatus={acStatus}
           />
           <Legend />
@@ -298,17 +264,13 @@ export default function Dashboard() {
           acStatus={acStatus}
           switchStatus={switchStatus}
           lastMotionSeconds={lastMotionSeconds}
-          sending={sending}
-          onSendAcCommand={handleSendAcCommand}
-          onToggleSwitch={handleToggleSwitch}
-          onOpenIr={() => setIrModalOpen(true)}
           recentEvents={recentInRoom}
         />
       </div>
 
       <LiveStreamTicker events={recentEvents} />
 
-      {irModalOpen && <IrSendModal onClose={() => setIrModalOpen(false)} onSend={handleSendIr} />}
+
     </div>
   )
 }
