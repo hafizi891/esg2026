@@ -49,7 +49,7 @@ export default function LevelsSidebar({
   facilitySummary,
 }) {
   return (
-    <aside className="w-64 shrink-0 flex flex-col gap-1">
+    <aside className="w-full lg:w-64 shrink-0 flex flex-col gap-1">
       <p className="px-3 pb-2 text-xs font-bold tracking-widest text-text-secondary uppercase">Levels</p>
       {floors.map((floor) => {
         const isActive = floor.id === activeFloorId
@@ -91,7 +91,7 @@ export default function LevelsSidebar({
             {facilitySummary.rooms === 1 ? '' : 's'}
           </p>
           <p className="text-sm text-text-secondary">
-            {facilitySummary.instrumented} instrumented · {facilitySummary.rules} rule{facilitySummary.rules === 1 ? '' : 's'}
+            {facilitySummary.instrumented} instrumented
           </p>
         </div>
       )}

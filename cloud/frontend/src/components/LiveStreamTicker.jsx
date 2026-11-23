@@ -15,7 +15,11 @@ export default function LiveStreamTicker({ events }) {
                 <span>{new Date(e.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 <span className="truncate ml-2">{e.where}</span>
               </div>
-              <p className="text-sm font-semibold text-text-primary leading-snug">{e.label}</p>
+              <p className="text-sm font-semibold text-text-primary leading-snug">
+                {e.label}
+                {e.count > 1 && <span className="text-text-secondary font-normal"> ×{e.count}</span>}
+              </p>
+              {e.peak != null && <p className="text-xs text-text-secondary mt-0.5">Peak level {e.peak}</p>}
             </div>
           ))}
         </div>

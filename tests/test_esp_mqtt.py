@@ -1,23 +1,21 @@
-import json
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "cloud"))
 
-from esp_mqtt import apply_esp_message, command_topic, normalize_command, subscription_topic
+from esp_mqtt import apply_esp_message, subscription_topic
 
 
 class EspMqttTests(unittest.TestCase):
     def test_topics_use_esp_device_base(self):
         base = "devices/esp-prototype-01"
         self.assertEqual(subscription_topic(base), "devices/esp-prototype-01/#")
-        self.assertEqual(command_topic(base), "devices/esp-prototype-01/command")
 
     def test_online_status_marks_device_online(self):
         state = {}
         events = apply_esp_message(state, "devices/esp-prototype-01/status", b"online", 100.0)
-        expected = {"id": "sensor-device", "online": True, "value": "online", "timestamp": 100.0}
+        expected = {"id": "sensor-device", "online": True, "value": "online", "timestamp": 100.0, "changed_at": 100.0}
         self.assertEqual(state["sensor-device"], expected)
         self.assertTrue(state["sensor-pir"]["online"])
         self.assertTrue(state["sensor-mic"]["online"])
@@ -30,6 +28,13 @@ class EspMqttTests(unittest.TestCase):
         self.assertEqual(state["sensor-pir"]["value"], "pir")
         self.assertTrue(state["sensor-pir"]["online"])
         self.assertEqual(events[0][0], "sensor_update")
+
+    def test_status_message_keeps_last_real_change_time(self):
+        state = {}
+        apply_esp_message(state, "devices/esp-prototype-01/motion", b'{"motion":true}', 101.0)
+        apply_esp_message(state, "devices/esp-prototype-01/status", b"online", 150.0)
+        self.assertEqual(state["sensor-pir"]["timestamp"], 150.0)
+        self.assertEqual(state["sensor-pir"]["changed_at"], 101.0)
 
     def test_sound_payload_maps_level_and_activity(self):
         state = {}
@@ -100,12 +105,6 @@ class EspMqttTests(unittest.TestCase):
         self.assertEqual(state["sensor-ac"]["last_command"], "aircon_26_low")
         self.assertTrue(any(name == "device_status_update" for name, _ in events))
 
-    def test_firmware_commands_are_allowlisted(self):
-        for command in ("aircon_on", "aircon_18", "aircon_27", "aircon_off", "trigger_ir"):
-            self.assertEqual(normalize_command(command), command)
-        with self.assertRaises(ValueError):
-            normalize_command("reboot")
-
     def test_unknown_or_malformed_topic_is_ignored(self):
         state = {}
         self.assertEqual(apply_esp_message(state, "devices/another-device/motion", b'{"motion":true}', 104.0), [])
@@ -122,11 +121,6 @@ class EspMqttTests(unittest.TestCase):
         apply_esp_message(state, "devices/esp-prototype-01/status", b"offline", 105.0)
         self.assertTrue(all(item["online"] is False for item in state.values()))
         self.assertEqual(state["sensor-device"]["value"], "offline")
-
-    def test_command_payload_is_plain_trigger_ir(self):
-        self.assertNotEqual(json.dumps("trigger_ir"), "trigger_ir")
-        self.assertTrue(command_topic("devices/esp-prototype-01").endswith("/command"))
-
 
 if __name__ == "__main__":
     unittest.main()

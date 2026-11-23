@@ -1,6 +1,6 @@
-import { roomHeadline, roomDescription, roomState } from '../lib/roomStatus'
+import { relativeTime, roomHeadline, roomDescription, roomState } from '../lib/roomStatus'
 
-function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
+function deviceStatusLabel(sensor, { acStatus, now }) {
   if (sensor.type === 'pir') return sensor.online ? (sensor.value === 'pir' ? 'Motion' : 'No motion') : 'Offline'
   if (sensor.type === 'aircon') {
     if (!acStatus?.online) return 'No state yet'
@@ -9,48 +9,44 @@ function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
   if (sensor.type === 'ir') return sensor.online ? 'Online' : 'Offline'
   if (sensor.type === 'mic') {
     if (!sensor.online) return 'Offline'
-    return sensor.value == null ? 'Waiting for sound' : `Last detected · ${sensor.value} peak-to-peak`
+    if (sensor.value == null) return 'Waiting for sound'
+    const when = sensor.changed_at != null ? relativeTime(now - sensor.changed_at) : null
+    return `Level ${sensor.value}${when ? ` · ${when}` : ''}`
   }
   if (sensor.id === 'sensor-device') return sensor.value === 'online' ? 'Online' : 'Offline'
-  if (sensor.type === 'switch') {
-    if (!switchStatus) return sensor.online ? 'Online' : 'Offline'
-    return switchStatus.online ? (switchStatus.value ? 'On' : 'Off') : 'Offline'
-  }
   if (sensor.value != null) return `${sensor.value}${sensor.unit || ''}`
   return sensor.online ? 'Online' : 'Offline'
 }
 
-function statusColor(sensor, { acStatus, switchStatus }) {
+function statusColor(sensor, { acStatus }) {
   if (sensor.alert) return 'text-danger'
   if (sensor.type === 'pir') return sensor.value === 'pir' ? 'text-accent' : 'text-text-secondary'
   if (sensor.type === 'aircon' && acStatus?.power === '1') return 'text-info'
-  if (sensor.type === 'switch' && switchStatus?.value) return 'text-info'
   return 'text-text-secondary'
 }
 
 export default function RoomStatusPanel({
   room,
   acStatus,
-  switchStatus,
   lastMotionSeconds,
   recentEvents,
+  now,
 }) {
   if (!room) {
     return (
-      <aside className="w-80 shrink-0 flex items-center justify-center text-text-secondary text-sm p-6">
+      <aside className="w-full lg:w-80 shrink-0 flex items-center justify-center text-text-secondary text-sm p-6">
         Select a room to see its detail.
       </aside>
     )
   }
 
   const hasAc = room.sensors.find((s) => s.type === 'aircon')
-  const hasSwitch = room.sensors.find((s) => s.type === 'switch')
   const state = roomState(room, acStatus)
   const isOn = acStatus?.power === '1'
   const temp = acStatus?.temp != null ? Number(acStatus.temp) : null
 
   return (
-    <aside className="w-80 shrink-0 flex flex-col gap-4">
+    <aside className="w-full lg:w-80 shrink-0 flex flex-col gap-4">
       <div className="rounded-xl bg-surface-2 border border-border p-5">
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs font-bold tracking-widest text-accent uppercase">{room.name}</p>
@@ -86,8 +82,8 @@ export default function RoomStatusPanel({
             className="w-full flex items-center justify-between px-4 py-3 text-sm"
           >
             <span className="text-text-primary font-medium">{sensor.name}</span>
-            <span className={statusColor(sensor, { acStatus, switchStatus })}>
-              {deviceStatusLabel(sensor, { acStatus, switchStatus })}
+            <span className={statusColor(sensor, { acStatus })}>
+              {deviceStatusLabel(sensor, { acStatus, now })}
             </span>
           </div>
         ))}
@@ -102,7 +98,10 @@ export default function RoomStatusPanel({
           {recentEvents.slice(0, 5).map((e, i) => (
             <div key={i} className="px-4 py-2.5 text-sm">
               <span className="text-text-secondary text-xs">{new Date(e.timestamp * 1000).toLocaleTimeString()}</span>
-              <p className="text-text-primary">{e.label}</p>
+              <p className="text-text-primary">
+                {e.label}
+                {e.count > 1 && <span className="text-text-secondary"> ×{e.count}</span>}
+              </p>
             </div>
           ))}
         </div>

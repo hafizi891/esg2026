@@ -6,7 +6,7 @@ ROOT = Path(__file__).parents[1] / "cloud" / "frontend" / "src"
 
 class ESGExecutiveUITests(unittest.TestCase):
     def test_executive_overview_contains_reporting_and_proxy_disclosures(self):
-        page = (ROOT / "pages" / "Analytics.jsx").read_text()
+        page = (ROOT / "pages" / "Analytics.jsx").read_text(encoding="utf-8")
         for text in (
             "Executive overview",
             "Operational efficiency",
@@ -17,7 +17,7 @@ class ESGExecutiveUITests(unittest.TestCase):
             self.assertIn(text, page)
 
     def test_navigation_separates_esg_overview_from_live_monitoring(self):
-        app = (ROOT / "App.jsx").read_text()
+        app = (ROOT / "App.jsx").read_text(encoding="utf-8")
         self.assertIn("ESG Overview", app)
         self.assertIn("Live Monitoring", app)
         self.assertIn('path="/monitoring"', app)

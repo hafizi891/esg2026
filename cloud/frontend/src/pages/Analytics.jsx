@@ -126,7 +126,7 @@ export default function Analytics() {
           <section className="mt-7 grid gap-4 md:grid-cols-3">
             <article className="rounded-2xl border border-white/10 bg-panel p-5"><p className="text-xs font-semibold text-text-primary">Environmental activity</p><p className="mt-2 text-xs leading-5 text-text-secondary">Sound values are 50 ms A0 peak-to-peak amplitudes, not calibrated decibels. Use event counts and relative trends.</p></article>
             <article className="rounded-2xl border border-white/10 bg-panel p-5"><p className="text-xs font-semibold text-text-primary">Operational efficiency</p><p className="mt-2 text-xs leading-5 text-text-secondary">Efficient-setpoint share tracks inferred runtime at 24°C or warmer. It is a controls indicator, not verified energy savings.</p></article>
-            <article className="rounded-2xl border border-white/10 bg-panel p-5"><p className="text-xs font-semibold text-text-primary">Disclosure boundary</p><p className="mt-2 text-xs leading-5 text-text-secondary">Runtime is not kWh or CO₂e. Add a power meter and documented grid-emission factor before reporting energy or carbon reductions.</p></article>
+            <article className="rounded-2xl border border-white/10 bg-panel p-5"><p className="text-xs font-semibold text-text-primary">Disclosure boundary</p><p className="mt-2 text-xs leading-5 text-text-secondary">Runtime pauses while the board is offline, since AC state is unknown then. Runtime is not kWh or CO₂e. Add a power meter and documented grid-emission factor before reporting energy or carbon reductions.</p></article>
           </section>
         </>}
       </div>
