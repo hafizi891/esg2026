@@ -1,14 +1,6 @@
 # Secrets / local config
 .env
 cloud/.env
-facility.json
-
-# Leftover tinytuya wizard/scan output — also contains real device local_key values
-devices.json
-snapshot.json
-
-# Captured raw IR codes — specific to your exact AC remote/model, not portable
-ir_codes.json
 
 # Runtime data
 *.db
@@ -21,7 +13,3 @@ venv/
 
 # Claude Code local settings (personal, not shared)
 .claude/settings.local.json
-
-# Frontend
-frontend/node_modules/
-frontend/dist/

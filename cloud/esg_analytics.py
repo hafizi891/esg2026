@@ -5,8 +5,13 @@ These are ESG-relevant usage proxies, not utility-grade energy or carbon data.
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# shortcut: fixed UTC+8 (Malaysia, no DST) for report day boundaries; make it configurable if deployed elsewhere.
+REPORT_TZ = timezone(timedelta(hours=8))
+_TZ_OFFSET = 8 * 3600
 
 
 class AnalyticsStore:
@@ -23,11 +28,18 @@ class AnalyticsStore:
                 )"""
             )
             db.execute("CREATE INDEX IF NOT EXISTS idx_esg_events_time ON esg_events(timestamp)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_esg_events_kind_time ON esg_events(kind, timestamp)")
 
+    @contextmanager
     def _connect(self):
+        # sqlite3's own `with` only commits; it never closes, which leaked a handle per call.
         db = sqlite3.connect(self.path, timeout=10)
-        db.execute("PRAGMA journal_mode=WAL")
-        return db
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def record(self, kind, timestamp, **data):
         if kind not in {"sound", "motion", "ac"}:
@@ -43,33 +55,47 @@ class AnalyticsStore:
         if end <= start:
             raise ValueError("End must be after start")
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT timestamp, kind, data FROM esg_events WHERE timestamp < ? ORDER BY timestamp, id",
-                (end,),
+            # Durations only need the last motion/AC state before the period, not all history.
+            rows = []
+            for kind in ("motion", "ac"):
+                rows += db.execute(
+                    "SELECT timestamp, kind, data FROM esg_events WHERE kind = ? AND timestamp < ? "
+                    "ORDER BY timestamp DESC, id DESC LIMIT 1",
+                    (kind, start),
+                ).fetchall()
+            rows += db.execute(
+                "SELECT timestamp, kind, data FROM esg_events WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp, id",
+                (start, end),
             ).fetchall()
 
         events = [(ts, kind, json.loads(data)) for ts, kind, data in rows]
+        state_events = [e for e in events if e[1] in ("motion", "ac")]
         in_period = [(ts, kind, data) for ts, kind, data in events if ts >= start]
         sounds = [data["level"] for _, kind, data in in_period if kind == "sound" and isinstance(data.get("level"), (int, float))]
 
-        motion_seconds = self._binary_duration(events, "motion", "active", start, end)
-        ac_seconds, temperature_seconds = self._ac_duration(events, start, end)
+        motion_seconds = self._binary_duration(state_events, "motion", "active", start, end)
+        ac_seconds, temperature_seconds = self._ac_duration(state_events, start, end)
         motion_events = sum(1 for _, kind, data in in_period if kind == "motion" and data.get("active") is True)
 
+        # Days run midnight-to-midnight in REPORT_TZ; bucket events in one pass.
+        first_day = (start + _TZ_OFFSET) // 86400 * 86400 - _TZ_OFFSET
+        buckets = {}
+        for ts, kind, data in in_period:
+            buckets.setdefault(first_day + (ts - first_day) // 86400 * 86400, []).append((kind, data))
+
         daily = []
-        first_day = int(start // 86400) * 86400
         day_start = first_day
         while day_start < end:
             day_end = min(day_start + 86400, end)
-            day_events = [(ts, kind, data) for ts, kind, data in in_period if day_start <= ts < day_end]
-            day_sounds = [data["level"] for _, kind, data in day_events if kind == "sound" and isinstance(data.get("level"), (int, float))]
+            day_events = buckets.get(day_start, [])
+            day_sounds = [data["level"] for kind, data in day_events if kind == "sound" and isinstance(data.get("level"), (int, float))]
             daily.append({
-                "date": datetime.fromtimestamp(day_start, timezone.utc).date().isoformat(),
+                "date": datetime.fromtimestamp(day_start, REPORT_TZ).date().isoformat(),
                 "sound_events": len(day_sounds),
                 "peak_sound_level": max(day_sounds) if day_sounds else None,
-                "motion_events": sum(1 for _, kind, data in day_events if kind == "motion" and data.get("active") is True),
-                "motion_active_seconds": round(self._binary_duration(events, "motion", "active", max(start, day_start), day_end), 3),
-                "ac_runtime_seconds": round(self._ac_duration(events, max(start, day_start), day_end)[0], 3),
+                "motion_events": sum(1 for kind, data in day_events if kind == "motion" and data.get("active") is True),
+                "motion_active_seconds": round(self._binary_duration(state_events, "motion", "active", max(start, day_start), day_end), 3),
+                "ac_runtime_seconds": round(self._ac_duration(state_events, max(start, day_start), day_end)[0], 3),
             })
             day_start += 86400
 
@@ -159,3 +185,27 @@ class AnalyticsStore:
             if temperature is not None:
                 by_temperature[temperature] = by_temperature.get(temperature, 0.0) + duration
         return max(0.0, total), by_temperature
+
+
+def record_esp_events(store, topic, events, now):
+    """Store the analytics-relevant readings from one apply_esp_message() result."""
+    readings = {payload.get("id"): payload for _, payload in events}
+    leaf = topic.rsplit("/", 1)[-1]
+    if leaf == "sound" and "sensor-mic" in readings:
+        store.record("sound", now, level=readings["sensor-mic"]["value"])
+    elif leaf == "motion" and "sensor-pir" in readings:
+        store.record("motion", now, active=readings["sensor-pir"]["motion"])
+    elif leaf == "status" and readings.get("sensor-device", {}).get("online") is False:
+        # A dropped board never sends "motion: false" or "aircon_off"; close open intervals.
+        # AC state is unknown while offline (power None), so it stops counting as runtime.
+        store.record("motion", now, active=False)
+        store.record("ac", now, power=None, source="DEVICE_OFFLINE")
+    elif leaf == "ir" and "sensor-ac" in readings:
+        reading = readings["sensor-ac"]
+        store.record(
+            "ac", now,
+            power=reading.get("power") == "1",
+            temperature=reading.get("temp"),
+            fan=reading.get("fan"),
+            source=reading.get("source"),
+        )

@@ -1,29 +1,17 @@
-"""Cloud-side companion to the Pi-hosted Smart Motion Sensor app.
+"""Cloud dashboard for the NodeMCU (ESP8266) prototype.
 
-Fully self-contained under cloud/ — no import of, or dependency on, anything
-in the rest of the repo. It never talks to Tuya at all — no API calls, no
-LAN dependency, deployable to any VM on its own. It only speaks to the same
-MQTT broker the Pi-hosted app (unmodified) already publishes to:
+Speaks only MQTT to the broker the NodeMCU publishes to (topic contract in
+esp_mqtt.py):
 
-  - Subscribes to "{prefix}/state/#" to mirror live sensor readings and
-    automation firings (published by the Pi's notify_clients()).
-  - Subscribes to "{prefix}/commands/#" to approximate current AC/switch
-    status from the commands the Pi mirrors there whenever it actually
-    sends one — the Pi has no dedicated "current AC/switch status" MQTT
-    topic, so this is a best-effort reconstruction, not a live read.
-  - Publishes to "{prefix}/remote/command" to send a command; the Pi's own
-    mqtt_client.start_remote_listener() picks it up and does the actual
-    device I/O against Tuya.
+  - Subscribes to "{prefix}/#" (status, motion, sound, ir) to mirror live
+    sensor state and record ESG analytics events (esg_analytics.py).
+  - Publishes plain-text commands to "{prefix}/command".
 
-The Pi is the only thing that ever touches real hardware, Tuya, or
-facility.json. This app is a mirror + a remote control, nothing more. Since
-it has no access to facility.json, the floor/room/sensor layout it renders
-comes from facility_layout.json (see that file) — a sanitized, manually
-maintained snapshot committed alongside this file. Update it by hand
-whenever floors/rooms/sensors/automations change on the Pi.
+The floor/room/sensor layout comes from facility_layout.json, a manually
+maintained file committed alongside this one.
 
-Gated by a single shared password (see /api/login) — this is the one app
-in the repo meant to be reachable from the open internet.
+Gated by a single shared password (see /api/login) — meant to be reachable
+from the open internet, behind an HTTPS reverse proxy.
 """
 import hmac
 import json
@@ -31,14 +19,15 @@ import os
 import secrets
 import threading
 import time
+import urllib.parse
+import urllib.request
 from functools import wraps
 from pathlib import Path
 
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request, Response, send_from_directory, session
-from flask_cors import CORS
-from esp_mqtt import apply_esp_message, command_topic, normalize_command, subscription_topic
-from esg_analytics import AnalyticsStore
+from esp_mqtt import apply_esp_message, subscription_topic
+from esg_analytics import AnalyticsStore, record_esp_events
 
 ENV_PATH = Path(__file__).parent / ".env"
 load_dotenv(ENV_PATH)
@@ -53,44 +42,28 @@ MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "smart-motion-sensor")
 CLOUD_DASHBOARD_PASSWORD = os.environ["CLOUD_DASHBOARD_PASSWORD"]
 
 FACILITY_LAYOUT = json.loads((Path(__file__).parent / "facility_layout.json").read_text(encoding="utf-8"))
+# Optional Telegram alert when the board goes offline / comes back. Unset = no alerts.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# /api/health reports unhealthy after this long with no MQTT message.
+HEALTH_MAX_SILENCE_SECONDS = 600
+
 ESG_ANALYTICS_PATH = Path(os.environ.get("ESG_ANALYTICS_PATH", Path(__file__).parent / "esg_analytics.db"))
 esg_analytics = AnalyticsStore(ESG_ANALYTICS_PATH)
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
 # Signs the session cookie — falls back to a per-process random key (fine
 # functionally, just means everyone's logged out on a restart) if unset.
 # Set CLOUD_SESSION_SECRET to a fixed random string to survive restarts.
 app.secret_key = os.environ.get("CLOUD_SESSION_SECRET") or secrets.token_hex(32)
+# Cookie only ever sent over HTTPS (browsers still allow it on http://localhost).
+app.config["SESSION_COOKIE_SECURE"] = True
 
-# In-memory only, deliberately not persisted — a restart just means a brief
-# gap until the Pi's next publish/command repopulates it. The Pi's own
-# SQLite (analytics_store.py) remains the durable source of history; this
-# is a live mirror, not a second database.
+# In-memory live mirror; durable history lives in esg_analytics.
 live_sensors = {}          # sensor_id -> last-known reading
-automation_log = []        # most recent automation firings, oldest first
-MAX_LOG = 500
-# Seeded from the static snapshot so the page has something to show before
-# the Pi's retained "state/automations" message arrives (published on every
-# Pi startup and after every create/update/delete — see app.py's
-# _publish_automations_state()); overwritten wholesale the moment it does.
-automations = list(FACILITY_LAYOUT["automations"])
-ac_status_cache = {}        # built up from mirrored "commands/ac" messages
-switch_status_cache = None  # {"online": True, "value": bool} from "commands/switch"
 
 sse_clients = []
 
-# The Pi is the only thing that ever publishes on state/# or commands/#, so
-# mqtt_status["last_message_at"] doubles as "last time we heard from the
-# Pi" — reliably, now that app.py's send_heartbeat() publishes something
-# every 20s even when nothing else changed. Comfortably above that interval
-# to tolerate a missed beat or two plus network jitter.
-PI_OFFLINE_TIMEOUT_SECONDS = 90
-
-# The currently-connected subscriber client, if any — kept so a config save
-# (see api_mqtt_update) can force a reconnect with the new settings without
-# waiting for the broker connection to drop on its own.
-_subscriber_client = None
 mqtt_status = {"connected": False, "last_error": None, "connected_at": None, "last_message_at": None}
 
 
@@ -147,107 +120,31 @@ def notify_clients(event_type, data):
         client.append(msg)
 
 
-def _handle_state_message(event_type, payload):
-    global automations, live_sensors, ac_status_cache
-    if event_type == "heartbeat":
-        pass  # nothing to do — just arriving at all is what keeps mqtt_status["last_message_at"] fresh
-    elif event_type == "automations":
-        automations = payload  # full replace — the Pi always publishes its complete current list, retained
-        notify_clients("automations", payload)
-    elif event_type == "sensor_update":
-        live_sensors[payload.get("id")] = payload
-        notify_clients("sensor_update", payload)
-    elif event_type == "sensor_snapshot":
-        # Retained, republished every ~20s by the Pi's heartbeat thread with
-        # EVERY sensor's current reading — full replace. Without this, a
-        # (re)connecting subscriber only ever learns a sensor's state from
-        # sensor_update (on-change only), so anything that hasn't happened
-        # to change since reconnecting would wrongly still show as
-        # offline/unknown even though it's genuinely fine.
-        live_sensors = payload
-        notify_clients("sensor_snapshot", payload)
-    elif event_type == "ac_status":
-        # Retained, full replace — the Pi's own send_ac_command() mirrors
-        # its complete known AC state here every time (not just the one
-        # aspect that changed), so this alone is enough to reconstruct
-        # ac_status_cache correctly on (re)connect. _handle_command_message
-        # below still updates it incrementally too on every command for
-        # lower latency; both converge to the same picture.
-        ac_status_cache = payload
-        notify_clients("device_status_update", {"device": "ac"})
-    elif event_type == "automation_triggered":
-        automation_log.append(
-            {
-                "automation_id": payload.get("id"),
-                # The unmodified Pi doesn't publish event_type/timestamp on this
-                # topic (only id/success/error) — these defaults keep the Logs
-                # page from choking on missing fields; they upgrade for free if
-                # the Pi's automation_engine.py is ever extended to include them.
-                "event_type": payload.get("event_type", "action"),
-                "success": payload.get("success"),
-                "error": payload.get("error"),
-                "timestamp": payload.get("timestamp", time.time()),
-                "source": "automation",
-                "device": None,
-            }
-        )
-        del automation_log[:-MAX_LOG]  # keep only the most recent MAX_LOG entries
-        notify_clients("automation_triggered", payload)
-    elif event_type == "manual_command":
-        # A dashboard click (from either app, not an automation) — mirrored
-        # here so it shows up in this app's own Logs page too, in the exact
-        # same shape the Pi's local Logs page renders (see
-        # analytics_store.log_manual_command / app.py's log_manual_command).
-        automation_log.append(
-            {
-                "automation_id": "manual",
-                "event_type": payload.get("event_type", "action"),
-                "success": payload.get("success"),
-                "error": None,
-                "timestamp": payload.get("timestamp", time.time()),
-                "source": "manual",
-                "device": payload.get("device"),
-            }
-        )
-        del automation_log[:-MAX_LOG]
-        notify_clients("manual_command", payload)
-
-
-# Mirrors app.py's AC_CODE_MAP — commands/ac is published there with the
-# ALREADY-mapped code ("power"/"temp"/"mode"/"wind"), so this just needs to
-# normalize "power" to the "1"/"0" strings the real Tuya status endpoint
-# uses (everything else the frontend reads via Number(), so int is fine).
-def _handle_command_message(device, payload):
-    global switch_status_cache
-    if device == "ac":
-        code, value = payload.get("code"), payload.get("value")
-        if code == "power":
-            ac_status_cache["power"] = "1" if value else "0"
-        elif code in ("temp", "mode", "wind"):
-            ac_status_cache[code] = value
-    elif device == "switch":
-        switch_status_cache = {"online": True, "value": bool(payload.get("value"))}
-    else:
+def send_telegram(text):
+    """Fire-and-forget alert; never blocks or breaks the MQTT loop."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         return
-    # Every AC/switch command is fire-and-forget over MQTT — the REST route
-    # that sent it (api_send_ac_command/api_toggle_switch/...) returns as
-    # soon as the publish succeeds, well before the Pi has actually
-    # executed it and mirrored the result back here. Without this, a
-    # dashboard's own "refresh device status right after my click" call
-    # reads the stale pre-update cache every time, and the real state only
-    # ever shows up after a full page reload made later, by chance, after
-    # this message had time to arrive. Broadcasting here lets the frontend
-    # refetch exactly when the mirrored state actually changes instead.
-    notify_clients("device_status_update", {"device": device})
+
+    def send():
+        try:
+            data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
+            urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", data, timeout=10)
+        except Exception as e:
+            print(f"Telegram alert failed: {e}")
+
+    threading.Thread(target=send, daemon=True).start()
+
+
+def alert_on_board_status(was_online, reading):
+    """Alert only on a real change; the first status after an app restart (was_online None) is silent."""
+    if reading is None or was_online is None or reading["online"] == was_online:
+        return
+    send_telegram("ESP board is back online" if reading["online"] else "ESP board went OFFLINE")
 
 
 def start_mqtt_subscriber():
-    """Runs forever (call in a background thread): subscribes to the Pi's
-    published state/command topics and updates the in-memory mirrors above.
-    Reads MQTT_BROKER_HOST etc. fresh on every (re)connect attempt — not just
-    once — so a settings save (api_mqtt_update) takes effect on the very
-    next iteration of this loop, without a process restart."""
-    global _subscriber_client
+    """Runs forever (call in a background thread): subscribes to the board's
+    topics and updates the live mirror and analytics."""
     while True:
         try:
             import paho.mqtt.client as mqtt
@@ -255,27 +152,13 @@ def start_mqtt_subscriber():
             def on_message(client, userdata, msg):
                 now = time.time()
                 mqtt_status["last_message_at"] = now
+                was_online = live_sensors.get("sensor-device", {}).get("online")
                 events = apply_esp_message(live_sensors, msg.topic, msg.payload, now, MQTT_TOPIC_PREFIX)
                 for event_type, payload in events:
                     notify_clients(event_type, payload)
-                if msg.topic.endswith("/sound"):
-                    reading = next((item for _, item in events if item.get("id") == "sensor-mic"), None)
-                    if reading:
-                        esg_analytics.record("sound", now, level=reading["value"])
-                elif msg.topic.endswith("/motion"):
-                    reading = next((item for _, item in events if item.get("id") == "sensor-pir"), None)
-                    if reading:
-                        esg_analytics.record("motion", now, active=reading["motion"])
-                elif msg.topic.endswith("/ir"):
-                    reading = next((item for _, item in events if item.get("id") == "sensor-ac"), None)
-                    if reading:
-                        esg_analytics.record(
-                            "ac", now,
-                            power=reading.get("power") == "1",
-                            temperature=reading.get("temp"),
-                            fan=reading.get("fan"),
-                            source=reading.get("source"),
-                        )
+                record_esp_events(esg_analytics, msg.topic, events, now)
+                if msg.topic.endswith("/status"):
+                    alert_on_board_status(was_online, live_sensors.get("sensor-device"))
 
             def on_disconnect(client, userdata, *args):
                 mqtt_status["connected"] = False
@@ -285,7 +168,6 @@ def start_mqtt_subscriber():
             client.on_message = on_message
             client.on_disconnect = on_disconnect
             client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=30)
-            _subscriber_client = client
             mqtt_status.update({"connected": True, "last_error": None, "connected_at": time.time()})
             topic = subscription_topic(MQTT_TOPIC_PREFIX)
             client.subscribe(topic, qos=1)
@@ -296,27 +178,7 @@ def start_mqtt_subscriber():
             print(f"Cloud app MQTT subscriber error: {e} — retrying in 10s")
             time.sleep(10)
         finally:
-            _subscriber_client = None
             mqtt_status["connected"] = False
-
-
-def publish_esp_command(payload="trigger_ir"):
-    """Send the ESP8266's plain-text command payload."""
-    import paho.mqtt.client as mqtt
-
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=10)
-    client.loop_start()
-    payload = normalize_command(payload)
-    client.publish(command_topic(MQTT_TOPIC_PREFIX), payload, qos=1).wait_for_publish(timeout=5)
-    client.loop_stop()
-    client.disconnect()
-
-
-def publish_command(payload):
-    """Reject legacy Pi commands after switching this dashboard to ESP topics."""
-    raise RuntimeError("This dashboard now uses the ESP8266 topic contract; legacy Pi commands are disabled")
 
 
 # ==========================================
@@ -326,9 +188,7 @@ def publish_command(payload):
 
 
 def _is_sensor_alert(sensor, value, online):
-    """Mirrors facility_store._is_sensor_alert on the Pi — duplicated by
-    hand since this app has no import path to it (deliberately; it never
-    touches facility.json)."""
+    """True when a sensor needs attention on the dashboard."""
     if sensor["type"] == "temperature" and sensor.get("thresholds") and value is not None:
         return value < sensor["thresholds"]["min"] or value > sensor["thresholds"]["max"]
     if sensor["type"] == "pir" and not online:
@@ -361,7 +221,7 @@ def api_dashboard():
             reading = live_sensors.get(sensor["id"], {"online": False, "value": None})
             value, online = reading.get("value"), reading.get("online", False)
             alert = _is_sensor_alert(sensor, value, online)
-            sensors_out.append({**sensor, "value": value, "online": online, "alert": alert})
+            sensors_out.append({**sensor, "value": value, "online": online, "alert": alert, "changed_at": reading.get("changed_at")})
         room_has_alert = any(s["alert"] for s in sensors_out)
         residents_out = [{**r, "alert": room_has_alert} for r in residents]
         rooms_out.append({**room, "residents": residents_out, "sensors": sensors_out})
@@ -386,47 +246,6 @@ def api_residents():
     return jsonify(FACILITY_LAYOUT["residents"])
 
 
-@app.route("/api/automations", methods=["GET", "POST"])
-@require_auth
-def api_automations():
-    if request.method == "GET":
-        return jsonify(automations)
-    # POST: create. Fire-and-forget over MQTT — the Pi is the source of
-    # truth and mirrors its resulting list back on "state/automations",
-    # which is what actually updates `automations` above (see
-    # _handle_state_message). Nothing is applied optimistically here.
-    data = request.json or {}
-    try:
-        publish_command({"type": "create_automation", "data": data})
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/automations/<automation_id>", methods=["PUT", "DELETE"])
-@require_auth
-def api_automation_detail(automation_id):
-    try:
-        if request.method == "PUT":
-            publish_command({"type": "update_automation", "id": automation_id, "data": request.json or {}})
-        else:
-            publish_command({"type": "delete_automation", "id": automation_id})
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/automation_events")
-@require_auth
-def api_automation_events():
-    limit = request.args.get("limit", 200, type=int)
-    since = request.args.get("since", type=float)
-    rows = automation_log
-    if since is not None:
-        rows = [r for r in rows if r.get("timestamp", 0) >= since]
-    return jsonify(list(reversed(rows[-limit:])))  # most recent first
-
-
 @app.route("/api/esg_analytics")
 @require_auth
 def api_esg_analytics():
@@ -437,68 +256,10 @@ def api_esg_analytics():
     return jsonify(esg_analytics.summary(end - days * 86400, end))
 
 
-@app.route("/api/send_ir", methods=["POST"])
-@require_auth
-def api_send_ir():
-    try:
-        publish_esp_command("trigger_ir")
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/send_ac_command", methods=["POST"])
-@require_auth
-def api_send_ac_command():
-    data = request.json or {}
-    command = data.get("command")
-    if not command:
-        return jsonify({"error": "command is required"}), 400
-    try:
-        publish_esp_command(command)
-        return jsonify({"success": True})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/toggle_switch", methods=["POST"])
-@require_auth
-def api_toggle_switch():
-    value = (request.json or {}).get("value")
-    if value is None:
-        return jsonify({"error": "value is required"}), 400
-    try:
-        publish_command({"type": "toggle_switch", "value": bool(value)})
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/resync_ac_state", methods=["POST"])
-@require_auth
-def api_resync_ac_state():
-    # NOTE: the unmodified Pi's dispatch_remote_command() has no handler for
-    # this command type yet — it'll log "unknown type" and no-op. Kept here
-    # so the button doesn't error; wire it up on the Pi side to make it real.
-    try:
-        publish_command({"type": "resync_ac_state", "data": request.json or {}})
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/ac_status")
 @require_auth
 def api_ac_status():
     return jsonify(live_sensors.get("sensor-ac") or {"online": False, "power": "0", "temp": None})
-
-
-@app.route("/api/switch_status")
-@require_auth
-def api_switch_status():
-    return jsonify(switch_status_cache or {"online": False, "value": None})
 
 
 @app.route("/api/mqtt")
@@ -516,51 +277,13 @@ def api_mqtt():
     )
 
 
-@app.route("/api/mqtt", methods=["PUT"])
-@require_auth
-def api_mqtt_update():
-    """Persists new broker settings to .env (preserving every other line in
-    it via dotenv's set_key) and forces the live subscriber to reconnect
-    with them immediately — no process restart needed. An omitted/blank
-    password leaves the stored one unchanged, since GET never returns it
-    for the form to round-trip."""
-    global MQTT_BROKER_HOST, MQTT_BROKER_PORT, MQTT_USERNAME, MQTT_PASSWORD, MQTT_TOPIC_PREFIX
-    data = request.json or {}
-
-    if data.get("broker_host"):
-        MQTT_BROKER_HOST = data["broker_host"]
-        set_key(ENV_PATH, "MQTT_BROKER_HOST", MQTT_BROKER_HOST)
-    if data.get("broker_port"):
-        try:
-            MQTT_BROKER_PORT = int(data["broker_port"])
-        except (TypeError, ValueError):
-            return jsonify({"error": "broker_port must be a number"}), 400
-        set_key(ENV_PATH, "MQTT_BROKER_PORT", str(MQTT_BROKER_PORT))
-    if data.get("username"):
-        MQTT_USERNAME = data["username"]
-        set_key(ENV_PATH, "MQTT_USERNAME", MQTT_USERNAME)
-    if data.get("password"):
-        MQTT_PASSWORD = data["password"]
-        set_key(ENV_PATH, "MQTT_PASSWORD", MQTT_PASSWORD)
-    if data.get("topic_prefix"):
-        MQTT_TOPIC_PREFIX = data["topic_prefix"]
-        set_key(ENV_PATH, "MQTT_TOPIC_PREFIX", MQTT_TOPIC_PREFIX)
-
-    if _subscriber_client is not None:
-        try:
-            _subscriber_client.disconnect()  # safe to call from another thread; forces a clean reconnect
-        except Exception:
-            pass
-
-    return jsonify({"success": True})
-
-
-@app.route("/api/pi_status")
-@require_auth
-def api_pi_status():
-    last_seen_at = mqtt_status["last_message_at"]
-    online = last_seen_at is not None and (time.time() - last_seen_at) < PI_OFFLINE_TIMEOUT_SECONDS
-    return jsonify({"online": online, "last_seen_at": last_seen_at})
+@app.route("/api/health")
+def api_health():
+    """Public, for an uptime monitor: 503 when MQTT is down or the board has gone silent."""
+    last = mqtt_status["last_message_at"]
+    age = None if last is None else round(time.time() - last)
+    ok = mqtt_status["connected"] and age is not None and age < HEALTH_MAX_SILENCE_SECONDS
+    return jsonify({"ok": ok, "last_message_age_seconds": age}), 200 if ok else 503
 
 
 @app.route("/api/stream")
