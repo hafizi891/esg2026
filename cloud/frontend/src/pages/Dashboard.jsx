@@ -197,7 +197,7 @@ export default function Dashboard() {
         const pir = room.sensors.find((s) => s.type === 'pir')
         if (pir?.online && pir.value === 'pir') occupied += 1
         if (room.sensors.some((s) => s.alert)) attention += 1
-        if (room.sensors.some((s) => s.type === 'aircon') && acStatus?.power === '1') acRunning += 1
+        if (room.sensors.some((s) => s.type === 'aircon') && acStatus?.online && acStatus?.power === '1') acRunning += 1
       }
     }
     return { occupied, acRunning, attention }

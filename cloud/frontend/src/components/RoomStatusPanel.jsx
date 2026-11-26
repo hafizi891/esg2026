@@ -3,7 +3,7 @@ import { roomHeadline, roomDescription, roomState } from '../lib/roomStatus'
 function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
   if (sensor.type === 'pir') return sensor.online ? (sensor.value === 'pir' ? 'Motion' : 'No motion') : 'Offline'
   if (sensor.type === 'aircon') {
-    if (!acStatus?.online) return 'No state yet'
+    if (!acStatus?.online) return acStatus?.temp != null ? `Offline · last ${acStatus.temp}°C` : 'Status unavailable'
     return acStatus.power === '1' ? `On · ${acStatus.temp}°C` : 'Off'
   }
   if (sensor.type === 'ir') return sensor.online ? 'Online' : 'Offline'
@@ -23,7 +23,7 @@ function deviceStatusLabel(sensor, { acStatus, switchStatus }) {
 function statusColor(sensor, { acStatus, switchStatus }) {
   if (sensor.alert) return 'text-danger'
   if (sensor.type === 'pir') return sensor.value === 'pir' ? 'text-accent' : 'text-text-secondary'
-  if (sensor.type === 'aircon' && acStatus?.power === '1') return 'text-info'
+  if (sensor.type === 'aircon' && acStatus?.online && acStatus.power === '1') return 'text-info'
   if (sensor.type === 'switch' && switchStatus?.value) return 'text-info'
   return 'text-text-secondary'
 }
@@ -46,7 +46,7 @@ export default function RoomStatusPanel({
   const hasAc = room.sensors.find((s) => s.type === 'aircon')
   const hasSwitch = room.sensors.find((s) => s.type === 'switch')
   const state = roomState(room, acStatus)
-  const isOn = acStatus?.power === '1'
+  const isOn = acStatus?.online && acStatus?.power === '1'
   const temp = acStatus?.temp != null ? Number(acStatus.temp) : null
 
   return (
@@ -71,10 +71,12 @@ export default function RoomStatusPanel({
           <div className="text-center mb-5">
             <p className="text-xs font-bold tracking-widest text-text-secondary uppercase mb-2">Air conditioner</p>
             <span className="text-4xl font-bold">
-              {isOn && temp != null ? `${temp}°C` : 'Off'}
+              {!acStatus?.online ? 'Status unavailable' : isOn && temp != null ? `${temp}°C` : 'Off'}
             </span>
           </div>
-          <p className="text-xs text-text-secondary text-center">Live status reported by the ESP8266.</p>
+          <p className="text-xs text-text-secondary text-center">
+            {acStatus?.online ? 'Live status reported by the ESP8266.' : temp != null ? `Last reported by the ESP8266: ${temp}°C.` : 'Waiting for the ESP8266 to reconnect.'}
+          </p>
         </div>
       )}
 

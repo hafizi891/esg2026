@@ -15,7 +15,7 @@ export function roomState(room, acStatus) {
   const pir = room.sensors.find((s) => s.type === 'pir')
   if (pir?.online && pir.value === 'pir') return 'motion'
   const hasAc = room.sensors.some((s) => s.type === 'aircon')
-  if (hasAc && acStatus?.power === '1') return 'ac-running'
+  if (hasAc && acStatus?.online && acStatus.power === '1') return 'ac-running'
   return 'idle'
 }
 
@@ -39,7 +39,11 @@ export function roomStatusLine(room, { acStatus, lastMotionSeconds } = {}) {
   const ac = room.sensors.find((s) => s.type === 'aircon')
   if (ac && acStatus) {
     const isOn = acStatus.power === '1'
-    parts.push(isOn ? `AC on, holding ${acStatus.temp}°C` : 'AC off')
+    if (!acStatus.online) {
+      parts.push(isOn && acStatus.temp != null ? `AC status unavailable · Last known ${acStatus.temp}°C` : 'AC status unavailable')
+    } else {
+      parts.push(isOn ? `AC on, holding ${acStatus.temp}°C` : 'AC off')
+    }
   }
 
   return parts.join(' · ')
@@ -67,7 +71,13 @@ export function roomDescription(room, { acStatus, lastMotionSeconds } = {}) {
   const ac = room.sensors.find((s) => s.type === 'aircon')
   let acPart = null
   if (ac && acStatus) {
-    acPart = acStatus.power === '1' ? `AC is on, holding ${acStatus.temp}°C.` : `AC is off.`
+    if (!acStatus.online) {
+      acPart = acStatus.power === '1' && acStatus.temp != null
+        ? `AC status is unavailable. Last known state was on at ${acStatus.temp}°C.`
+        : 'AC status is unavailable.'
+    } else {
+      acPart = acStatus.power === '1' ? `AC is on, holding ${acStatus.temp}°C.` : 'AC is off.'
+    }
   }
 
   return [motionPart, acPart].filter(Boolean).join(' ')

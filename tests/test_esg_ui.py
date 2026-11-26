@@ -23,6 +23,16 @@ class ESGExecutiveUITests(unittest.TestCase):
         self.assertIn('path="/monitoring"', app)
         self.assertIn('<Route path="/" element={<Analytics />}', app)
 
+    def test_offline_ac_is_never_presented_as_live_or_running(self):
+        status = (ROOT / "lib" / "roomStatus.js").read_text()
+        panel = (ROOT / "components" / "RoomStatusPanel.jsx").read_text()
+        dashboard = (ROOT / "pages" / "Dashboard.jsx").read_text()
+        self.assertIn("acStatus?.online && acStatus.power === '1'", status)
+        self.assertIn("Last known", status)
+        self.assertIn("Status unavailable", panel)
+        self.assertIn("Last reported by the ESP8266", panel)
+        self.assertIn("acStatus?.online && acStatus?.power === '1'", dashboard)
+
 
 if __name__ == "__main__":
     unittest.main()
